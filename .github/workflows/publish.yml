@@ -31,7 +31,5 @@ jobs:
           pnpm -C apps/parquetlens build
 
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: npm publish --access public
         working-directory: apps/parquetlens
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
