@@ -239,6 +239,41 @@ function resolveColumns(table: Table, requested: string[]): { names: string[]; i
   };
 }
 
+const MAX_COL_WIDTH = 40;
+
+function printTable(rows: Record<string, unknown>[]): void {
+  if (rows.length === 0) {
+    process.stdout.write("(no rows)\n");
+    return;
+  }
+
+  const columns = Object.keys(rows[0]);
+  const widths = columns.map((col) => {
+    const maxVal = rows.reduce((max, row) => {
+      const val = String(row[col] ?? "");
+      return Math.max(max, val.length);
+    }, col.length);
+    return Math.min(maxVal, MAX_COL_WIDTH);
+  });
+
+  const pad = (str: string, width: number) => {
+    if (str.length > width) {
+      return str.slice(0, width - 3) + "...";
+    }
+    return str.padEnd(width);
+  };
+
+  const header = columns.map((col, i) => pad(col, widths[i])).join("  ");
+  const separator = widths.map((w) => "-".repeat(w)).join("  ");
+
+  process.stdout.write(`${header}\n${separator}\n`);
+
+  for (const row of rows) {
+    const line = columns.map((col, i) => pad(String(row[col] ?? ""), widths[i])).join("  ");
+    process.stdout.write(`${line}\n`);
+  }
+}
+
 function formatCell(value: unknown): unknown {
   if (value === null || value === undefined) {
     return null;
@@ -376,7 +411,7 @@ async function main(): Promise<void> {
         process.stdout.write(`${JSON.stringify(row)}\n`);
       }
     } else {
-      console.table(rows);
+      printTable(rows);
     }
     return;
   }
@@ -438,7 +473,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.table(rows);
+  printTable(rows);
 }
 
 function resolveTuiMode(mode: TuiMode, options: Options): boolean {
