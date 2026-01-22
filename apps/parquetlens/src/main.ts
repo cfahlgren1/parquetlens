@@ -83,6 +83,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 
     if (arg === "--plain" || arg === "--no-tui") {
       options.tuiMode = "off";
+      options.showSchema = false;
       continue;
     }
 
