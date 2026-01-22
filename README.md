@@ -4,15 +4,25 @@ fast parquet previewer with a csvlens-style tui.
 
 <img width="1726" height="994" alt="image" src="https://github.com/user-attachments/assets/4ad68486-e544-4ef1-aa50-5ca855407259" />
 
-## quick start
+## install
+
+```bash
+npm install -g parquetlens
+```
+
+or run directly with npx:
+
+```bash
+npx parquetlens data.parquet
+```
+
+## development
 
 ```bash
 corepack enable pnpm
 pnpm install
 pnpm -C apps/parquetlens dev -- ./data.parquet
 ```
-
-the full-screen tui uses opentui and runs under bun (falls back to plain output if bun is missing).
 
 ## usage
 
