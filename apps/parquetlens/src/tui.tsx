@@ -492,14 +492,24 @@ function StaticApp({ table, title, options, onExit }: StaticAppProps) {
   const { width, height } = useTerminalDimensions();
   const pageSize = Math.max(1, height - RESERVED_LINES);
 
-  const columns: ColumnInfo[] = table.schema.fields.map((field) => ({
-    name: field.name,
-    type: formatArrowType(field.type),
-  }));
-  const allRows = tableToRows(
-    table,
-    columns.map((c) => c.name),
+  const columns: ColumnInfo[] = useMemo(
+    () =>
+      table.schema.fields.map((field) => ({
+        name: field.name,
+        type: formatArrowType(field.type),
+      })),
+    [table],
   );
+
+  const allRows = useMemo(
+    () =>
+      tableToRows(
+        table,
+        columns.map((c) => c.name),
+      ),
+    [table, columns],
+  );
+
   const totalRows = allRows.length;
 
   const [offset, setOffset] = useState(0);
@@ -514,8 +524,15 @@ function StaticApp({ table, title, options, onExit }: StaticAppProps) {
   const tableWidth = Math.max(0, width - (sidebarOpen ? sidebarWidth + PANEL_GAP : 0));
   const tableContentWidth = Math.max(0, tableWidth - CONTENT_BORDER_WIDTH);
 
-  const visibleRows = allRows.slice(offset, offset + pageSize);
-  const grid: GridState = { columns, rows: visibleRows };
+  const visibleRows = useMemo(
+    () => allRows.slice(offset, offset + pageSize),
+    [allRows, offset, pageSize],
+  );
+
+  const grid: GridState = useMemo(
+    () => ({ columns, rows: visibleRows }),
+    [columns, visibleRows],
+  );
 
   const gridLines = useMemo(
     () => buildGridLines(grid, offset, tableContentWidth),

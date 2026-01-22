@@ -11,11 +11,17 @@ import {
 import type { Table } from "apache-arrow";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { fileURLToPath as nodeFileURLToPath } from "node:url";
 
-// __filename and __dirname are provided by tsup banner in production,
-// or by globalThis in some environments. For dev mode (tsx), we use import.meta.url.
+// __filename is provided by tsup banner in production.
+// In dev mode (tsx/ESM), we derive it from import.meta.url.
+// Use a different name to avoid duplicate declaration with banner.
+const __parquetlens_filename =
+  typeof __filename !== "undefined"
+    ? __filename
+    : nodeFileURLToPath(import.meta.url);
+
 declare const __filename: string;
-declare const __dirname: string;
 
 type TuiMode = "auto" | "on" | "off";
 
@@ -480,7 +486,7 @@ function spawnBun(argv: string[]): boolean {
     return false;
   }
 
-  const result = spawnSync("bun", [__filename, ...argv.slice(1)], {
+  const result = spawnSync("bun", [__parquetlens_filename, ...argv.slice(1)], {
     stdio: "inherit",
     env: { ...process.env, PARQUETLENS_BUN: "1" },
   });
@@ -490,7 +496,7 @@ function spawnBun(argv: string[]): boolean {
 }
 
 async function importTuiModule(): Promise<typeof import("./tui.js")> {
-  const extension = path.extname(__filename);
+  const extension = path.extname(__parquetlens_filename);
   const modulePath = extension === ".js" ? "./tui.js" : "./tui.tsx";
   return import(modulePath);
 }
