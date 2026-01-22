@@ -64,6 +64,7 @@ type WasmModule = DuckDBModule & {
   HEAPU8: Uint8Array;
   HEAPF64: Float64Array;
   _malloc: (size: number) => number;
+  _free: (ptr: number) => void;
 };
 
 async function getDuckDb(): Promise<DuckDBBindings> {
@@ -269,7 +270,13 @@ function ensureHttpRuntimeSupport(): void {
   };
 
   NODE_RUNTIME.closeFile = (mod: DuckDBModule, fileId: number): void => {
-    httpBuffers.delete(fileId);
+    const cached = httpBuffers.get(fileId);
+    if (cached) {
+      if (cached.dataPtr) {
+        (mod as WasmModule)._free(cached.dataPtr);
+      }
+      httpBuffers.delete(fileId);
+    }
     nodeCloseFile(mod, fileId);
   };
 
