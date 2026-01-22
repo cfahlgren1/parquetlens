@@ -54,7 +54,7 @@ async function getDuckDb(): Promise<DuckDBBindings> {
       const db = await createDuckDB(bundles, new VoidLogger(), NODE_RUNTIME);
       await db.instantiate();
       db.open({
-        accessMode: DuckDBAccessMode.READ_ONLY,
+        accessMode: DuckDBAccessMode.READ_WRITE,
         filesystem: {
           allowFullHTTPReads: true,
         },
