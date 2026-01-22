@@ -125,7 +125,6 @@ function parseArgs(argv: string[]): ParsedArgs {
     const sqlValue = readOptionValue(arg, "--sql", argv[i + 1]);
     if (sqlValue) {
       options.sql = sqlValue.value;
-      options.tuiMode = "off";
       if (sqlValue.usedNext) {
         i += 1;
       }
@@ -370,6 +369,19 @@ async function main(): Promise<void> {
       source === "-"
         ? await runSqlOnParquetFromStdin(options.sql)
         : await runSqlOnParquet(source, options.sql);
+
+    // Use TUI for SQL results if not in JSON/plain mode
+    if (!options.json && options.tuiMode !== "off" && process.stdin.isTTY && process.stdout.isTTY) {
+      if (isBunRuntime()) {
+        const { runTuiWithTable } = await importTuiModule();
+        const title = `SQL: ${options.sql.slice(0, 50)}${options.sql.length > 50 ? "..." : ""}`;
+        await runTuiWithTable(table, title, { columns: [], maxRows: options.limit });
+        return;
+      }
+      // Try spawning bun for TUI
+      // For SQL mode with TUI, we'd need to pass the table data which is complex
+      // Fall through to plain output
+    }
 
     const rows = tableToRows(table, options.limit);
 
