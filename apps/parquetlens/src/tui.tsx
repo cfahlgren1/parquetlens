@@ -216,6 +216,12 @@ function App({ source, filePath, options, onExit }: AppProps) {
     });
   }, [grid.columns.length, grid.rows.length]);
 
+  useEffect(() => {
+    if (error) {
+      setSidebarOpen(true);
+    }
+  }, [error]);
+
   useKeyboard((key) => {
     if ((key.ctrl && key.name === "c") || key.name === "escape" || key.name === "q") {
       if (sidebarOpen && key.name === "escape") {
@@ -276,6 +282,11 @@ function App({ source, filePath, options, onExit }: AppProps) {
       return;
     }
 
+    if (key.name === "e" && error) {
+      setSidebarOpen(true);
+      return;
+    }
+
     if (key.name === "left" || key.name === "h") {
       setXOffset((current) =>
         clampScroll(findScrollStop(current, gridLines.scrollStops, -1), maxScrollX),
@@ -291,7 +302,8 @@ function App({ source, filePath, options, onExit }: AppProps) {
   });
 
   const visibleLines = applyHorizontalScroll(gridLines, tableContentWidth, xOffset, pageSize);
-  const detail = buildDetail(selection, grid, offset);
+  const detail = error ? buildErrorDetail(error) : buildDetail(selection, grid, offset);
+  const detailTitle = error ? "error detail" : "cell detail";
   const metaFlags = getMetadataFlags(metadata);
 
   return (
@@ -382,7 +394,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
             backgroundColor={THEME.panel}
             border
             borderColor={THEME.border}
-            title="cell detail"
+            title={detailTitle}
             titleAlignment="left"
           >
             <text wrapMode="none" truncate fg={THEME.muted}>
@@ -413,7 +425,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
         ) : null}
       </box>
       <box backgroundColor={THEME.header} border borderColor={THEME.border}>
-        {renderFooter()}
+        {renderFooter(Boolean(error))}
       </box>
     </box>
   );
@@ -506,12 +518,13 @@ function renderHeader(props: HeaderProps) {
   );
 }
 
-function renderFooterLine(): string {
-  return "q exit | arrows/jk scroll | pgup/pgdn page | h/l col jump | mouse wheel scroll | click cell for detail | s/enter toggle panel";
+function renderFooterLine(hasError: boolean): string {
+  const errorHint = hasError ? " | e view error" : "";
+  return `q exit | arrows/jk scroll | pgup/pgdn page | h/l col jump | mouse wheel scroll | click cell for detail | s/enter toggle panel${errorHint}`;
 }
 
-function renderFooter() {
-  const controls = renderFooterLine();
+function renderFooter(hasError: boolean) {
+  const controls = renderFooterLine(hasError);
 
   return (
     <box flexDirection="column" width="100%">
@@ -716,6 +729,10 @@ function buildDetail(
   const absoluteRow = offset + rowIndex + 1;
 
   return `row ${absoluteRow} • ${columnName}\n${columnType}\n\n${value}`;
+}
+
+function buildErrorDetail(message: string): string {
+  return `error\n\n${message}`;
 }
 
 function getMetadataFlags(metadata: ParquetFileMetadata | null): {
