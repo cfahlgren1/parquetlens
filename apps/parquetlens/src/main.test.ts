@@ -85,3 +85,96 @@ describe("local parquet fixture", () => {
     expect(rows[0]?.city).toBe("Seattle");
   });
 });
+
+describe("SQL queries", () => {
+  it("runs a simple SELECT query", async () => {
+    const { stdout, code } = await runCli([
+      FIXTURE_PATH,
+      "--sql",
+      "SELECT * FROM data LIMIT 2",
+      "--json",
+    ]);
+
+    expect(code).toBe(0);
+    const lines = stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    const rows = lines.map((line) => JSON.parse(line));
+    expect(rows.length).toBe(2);
+    expect(rows[0]).toHaveProperty("city");
+  });
+
+  it("runs a query with WHERE clause", async () => {
+    const { stdout, code } = await runCli([
+      FIXTURE_PATH,
+      "--sql",
+      "SELECT * FROM data WHERE city = 'Seattle'",
+      "--json",
+    ]);
+
+    expect(code).toBe(0);
+    const lines = stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    const rows = lines.map((line) => JSON.parse(line));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((row) => row.city === "Seattle")).toBe(true);
+  });
+
+  it("runs a query with aggregation", async () => {
+    const { stdout, code } = await runCli([
+      FIXTURE_PATH,
+      "--sql",
+      "SELECT city, COUNT(*) as count FROM data GROUP BY city ORDER BY count DESC",
+      "--json",
+    ]);
+
+    expect(code).toBe(0);
+    const lines = stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    const rows = lines.map((line) => JSON.parse(line));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0]).toHaveProperty("city");
+    expect(rows[0]).toHaveProperty("count");
+  });
+
+  it("runs a query selecting specific columns", async () => {
+    const { stdout, code } = await runCli([
+      FIXTURE_PATH,
+      "--sql",
+      "SELECT city, state FROM data LIMIT 1",
+      "--json",
+    ]);
+
+    expect(code).toBe(0);
+    const lines = stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    const rows = lines.map((line) => JSON.parse(line));
+    expect(rows.length).toBe(1);
+    expect(Object.keys(rows[0])).toEqual(["city", "state"]);
+  });
+
+  it("shows --sql in help", async () => {
+    const { stdout, code } = await runCli(["--help"]);
+    expect(code).toBe(0);
+    expect(stdout).toContain("--sql");
+    expect(stdout).toContain("data");
+  });
+
+  it("handles SQL errors gracefully", async () => {
+    const { stderr, code } = await runCli([
+      FIXTURE_PATH,
+      "--sql",
+      "SELECT * FROM nonexistent_table",
+    ]);
+
+    expect(code).toBe(1);
+    expect(stderr.length).toBeGreaterThan(0);
+  });
+});

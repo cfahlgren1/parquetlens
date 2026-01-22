@@ -5,17 +5,17 @@ import {
   readParquetTableFromStdin,
   readParquetTableFromUrl,
   resolveParquetUrl,
+  runSqlOnParquet,
+  runSqlOnParquetFromStdin,
 } from "@parquetlens/parquet-reader";
 import type { Table } from "apache-arrow";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-// Polyfill __filename for ESM (tsx dev mode)
-const __filename =
-  typeof globalThis.__filename !== "undefined"
-    ? globalThis.__filename
-    : fileURLToPath(import.meta.url);
+// __filename and __dirname are provided by tsup banner in production,
+// or by globalThis in some environments. For dev mode (tsx), we use import.meta.url.
+declare const __filename: string;
+declare const __dirname: string;
 
 type TuiMode = "auto" | "on" | "off";
 
@@ -26,6 +26,7 @@ type Options = {
   schemaOnly: boolean;
   showSchema: boolean;
   tuiMode: TuiMode;
+  sql?: string;
 };
 
 type ParsedArgs = {
@@ -121,6 +122,16 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    const sqlValue = readOptionValue(arg, "--sql", argv[i + 1]);
+    if (sqlValue) {
+      options.sql = sqlValue.value;
+      options.tuiMode = "off";
+      if (sqlValue.usedNext) {
+        i += 1;
+      }
+      continue;
+    }
+
     if (arg === "-") {
       if (input) {
         return { options, limitSpecified, help: false, error: "unexpected extra argument: -" };
@@ -145,7 +156,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 function readOptionValue(
   arg: string,
-  name: "--limit" | "--columns",
+  name: "--limit" | "--columns" | "--sql",
   next?: string,
 ): { value: string; usedNext: boolean } | null {
   if (arg === name) {
@@ -168,6 +179,7 @@ function printUsage(): void {
 options:
   --limit, --limit=<n>       number of rows to show (default: ${DEFAULT_LIMIT})
   --columns, --columns=<c>   comma-separated column list
+  --sql, --sql=<query>       run SQL query (use 'data' as table name)
   --schema                   print schema only
   --no-schema                skip schema output
   --json                     output rows as json lines
@@ -178,6 +190,7 @@ options:
 examples:
   parquetlens data.parquet --limit 25
   parquetlens data.parquet --columns=city,state
+  parquetlens data.parquet --sql "SELECT city, COUNT(*) FROM data GROUP BY city"
   parquetlens hf://datasets/cfahlgren1/hub-stats/daily_papers.parquet
   parquetlens https://huggingface.co/datasets/cfahlgren1/hub-stats/resolve/main/daily_papers.parquet
   parquetlens data.parquet --plain
@@ -249,6 +262,32 @@ function formatCell(value: unknown): unknown {
   return value;
 }
 
+function tableToRows(table: Table, limit: number): Record<string, unknown>[] {
+  const fields = table.schema.fields.map((field) => field.name);
+  const rows: Record<string, unknown>[] = [];
+
+  for (const batch of table.batches) {
+    const vectors = fields.map((_, index) => batch.getChildAt(index));
+
+    for (let rowIndex = 0; rowIndex < batch.numRows; rowIndex += 1) {
+      if (rows.length >= limit) {
+        return rows;
+      }
+
+      const row: Record<string, unknown> = {};
+
+      for (let colIndex = 0; colIndex < fields.length; colIndex += 1) {
+        const vector = vectors[colIndex];
+        row[fields[colIndex]] = formatCell(vector?.get(rowIndex));
+      }
+
+      rows.push(row);
+    }
+  }
+
+  return rows;
+}
+
 function previewRows(
   table: Table,
   limit: number,
@@ -313,6 +352,34 @@ async function main(): Promise<void> {
     process.stderr.write(`parquetlens: ${error}\n`);
     printUsage();
     process.exitCode = 1;
+    return;
+  }
+
+  // Handle SQL mode
+  if (options.sql) {
+    const stdinFallback = process.stdin.isTTY ? undefined : "-";
+    const source = input ?? stdinFallback;
+
+    if (!source) {
+      process.stderr.write("parquetlens: missing input file for SQL query\n");
+      process.exitCode = 1;
+      return;
+    }
+
+    const table =
+      source === "-"
+        ? await runSqlOnParquetFromStdin(options.sql)
+        : await runSqlOnParquet(source, options.sql);
+
+    const rows = tableToRows(table, options.limit);
+
+    if (options.json) {
+      for (const row of rows) {
+        process.stdout.write(`${JSON.stringify(row)}\n`);
+      }
+    } else {
+      console.table(rows);
+    }
     return;
   }
 
