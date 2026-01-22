@@ -2,7 +2,11 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot, useKeyboard, useTerminalDimensions } from "@opentui/react";
 import React, { useEffect, useMemo, useState } from "react";
 
-import type { ParquetBufferSource, ParquetReadOptions } from "@parquetlens/parquet-reader";
+import type {
+  ParquetBufferSource,
+  ParquetFileMetadata,
+  ParquetReadOptions,
+} from "@parquetlens/parquet-reader";
 import { openParquetBufferFromPath } from "@parquetlens/parquet-reader";
 
 type TuiOptions = {
@@ -11,13 +15,19 @@ type TuiOptions = {
   batchSize?: number;
 };
 
+type ColumnInfo = {
+  name: string;
+  type: string;
+};
+
 type GridState = {
-  columns: string[];
+  columns: ColumnInfo[];
   rows: string[][];
 };
 
 type GridLines = {
-  headerLine: string;
+  headerNameLine: string;
+  headerTypeLine: string;
   separatorLine: string;
   rowLines: string[];
   maxLineLength: number;
@@ -26,23 +36,29 @@ type GridLines = {
 };
 
 const TOP_BAR_LINES = 3;
-const FOOTER_LINES = 3;
+const FOOTER_LINES = 4;
 const TABLE_BORDER_LINES = 2;
-const TABLE_HEADER_LINES = 2;
+const TABLE_HEADER_LINES = 3;
 const RESERVED_LINES = TOP_BAR_LINES + FOOTER_LINES + TABLE_BORDER_LINES + TABLE_HEADER_LINES;
 const DEFAULT_COLUMN_WIDTH = 6;
 const MAX_COLUMN_WIDTH = 40;
 const SCROLL_STEP = 3;
+const SIDEBAR_WIDTH_RATIO = 0.35;
+const SIDEBAR_MIN_WIDTH = 24;
+const CONTENT_BORDER_WIDTH = 2;
+const PANEL_GAP = 1;
 
 const THEME = {
-  background: "#0b0f19",
-  panel: "#111827",
-  header: "#1f2937",
-  border: "#334155",
-  accent: "#22d3ee",
-  text: "#e5e7eb",
-  muted: "#94a3b8",
-  stripe: "#0f172a",
+  background: "#1e1f29",
+  panel: "#22232e",
+  header: "#2d2f3d",
+  border: "#44475a",
+  accent: "#bd93f9",
+  badge: "#50fa7b",
+  badgeText: "#1e1f29",
+  text: "#c5cee0",
+  muted: "#6272a4",
+  stripe: "#252733",
 };
 
 export async function runTui(filePath: string, options: TuiOptions): Promise<void> {
@@ -80,11 +96,17 @@ function App({ source, filePath, options, onExit }: AppProps) {
 
   const [offset, setOffset] = useState(0);
   const [xOffset, setXOffset] = useState(0);
-  const [grid, setGrid] = useState<GridState>({ columns: [], rows: [] });
+  const [grid, setGrid] = useState<GridState>({ columns: [], rows: [] } as GridState);
   const [selection, setSelection] = useState<{ row: number; col: number } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(null);
+  const sidebarWidth = sidebarOpen
+    ? Math.min(width, Math.max(SIDEBAR_MIN_WIDTH, Math.floor(width * SIDEBAR_WIDTH_RATIO)))
+    : 0;
+  const tableWidth = Math.max(0, width - (sidebarOpen ? sidebarWidth + PANEL_GAP : 0));
+  const tableContentWidth = Math.max(0, tableWidth - CONTENT_BORDER_WIDTH);
 
   const columnsToRead = options.columns;
 
@@ -105,8 +127,14 @@ function App({ source, filePath, options, onExit }: AppProps) {
           offset,
         };
         const table = source.readTable(readOptions);
-        const columns = table.schema.fields.map((field) => field.name);
-        const rows = tableToRows(table, columns);
+        const columns: ColumnInfo[] = table.schema.fields.map((field) => ({
+          name: field.name,
+          type: formatArrowType(field.type),
+        }));
+        const rows = tableToRows(
+          table,
+          columns.map((c) => c.name),
+        );
 
         if (!canceled) {
           setGrid({ columns, rows });
@@ -130,12 +158,35 @@ function App({ source, filePath, options, onExit }: AppProps) {
     };
   }, [columnsToRead, offset, options.batchSize, options.maxRows, pageSize, source]);
 
-  const gridLines = useMemo(() => buildGridLines(grid, offset), [grid, offset]);
-  const maxScrollX = Math.max(0, gridLines.maxLineLength - width);
+  useEffect(() => {
+    let canceled = false;
+    source
+      .readMetadata()
+      .then((meta) => {
+        if (!canceled) {
+          setMetadata(meta);
+        }
+      })
+      .catch(() => {
+        if (!canceled) {
+          setMetadata(null);
+        }
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [source]);
+
+  const gridLines = useMemo(
+    () => buildGridLines(grid, offset, tableContentWidth),
+    [grid, offset, tableContentWidth],
+  );
+  const maxScrollX = Math.max(0, gridLines.maxLineLength - tableContentWidth);
 
   useEffect(() => {
     setXOffset((current) => Math.min(current, maxScrollX));
-  }, [gridLines.maxLineLength, maxScrollX, width]);
+  }, [gridLines.maxLineLength, maxScrollX, tableContentWidth]);
 
   useEffect(() => {
     if (grid.rows.length === 0 || grid.columns.length === 0) {
@@ -224,30 +275,32 @@ function App({ source, filePath, options, onExit }: AppProps) {
     }
   });
 
-  const visibleLines = applyHorizontalScroll(gridLines, width, xOffset, pageSize);
+  const visibleLines = applyHorizontalScroll(gridLines, tableContentWidth, xOffset, pageSize);
   const detail = buildDetail(selection, grid, offset);
+  const metaFlags = getMetadataFlags(metadata);
 
   return (
     <box flexDirection="column" width="100%" height="100%" backgroundColor={THEME.background}>
-      <box backgroundColor={THEME.header} border borderColor={THEME.border} title="parquetlens">
-        <text wrapMode="none" truncate fg={THEME.text}>
-          {renderStatusLine({
-            filePath,
-            offset,
-            rows: grid.rows.length,
-            columns: grid.columns.length,
-            loading,
-            error,
-            maxRows: options.maxRows,
-          })}
-        </text>
+      <box backgroundColor={THEME.header} border borderColor={THEME.border}>
+        {renderHeader({
+          filePath,
+          offset,
+          rows: grid.rows.length,
+          columns: grid.columns.length,
+          loading,
+          error,
+          maxRows: options.maxRows,
+          optimized: metaFlags.optimized,
+          createdBy: metaFlags.createdBy,
+        })}
       </box>
-      <box flexGrow={1} flexDirection="row" gap={1}>
+      <box flexGrow={1} flexDirection="row" gap={PANEL_GAP}>
         <box
           backgroundColor={THEME.panel}
           border
           borderColor={THEME.border}
           flexGrow={1}
+          width={sidebarOpen ? tableWidth : "100%"}
           onMouseScroll={(event) => {
             if (!event.scroll) {
               return;
@@ -271,9 +324,12 @@ function App({ source, filePath, options, onExit }: AppProps) {
           }}
         >
           <text wrapMode="none" truncate fg={THEME.accent}>
-            {visibleLines.header}
+            {visibleLines.headerName}
           </text>
           <text wrapMode="none" truncate fg={THEME.muted}>
+            {visibleLines.headerType}
+          </text>
+          <text wrapMode="none" truncate fg={THEME.border}>
             {visibleLines.separator}
           </text>
           {visibleLines.rows.map((line, index) => {
@@ -342,15 +398,13 @@ function App({ source, filePath, options, onExit }: AppProps) {
         ) : null}
       </box>
       <box backgroundColor={THEME.header} border borderColor={THEME.border}>
-        <text wrapMode="none" truncate fg={THEME.muted}>
-          {renderFooterLine()}
-        </text>
+        {renderFooter()}
       </box>
     </box>
   );
 }
 
-type StatusLineInput = {
+type HeaderProps = {
   filePath: string;
   offset: number;
   rows: number;
@@ -358,49 +412,129 @@ type StatusLineInput = {
   loading: boolean;
   error: string | null;
   maxRows?: number;
+  createdBy?: string;
+  optimized: boolean;
 };
 
-function renderStatusLine({
-  filePath,
-  offset,
-  rows,
-  columns,
-  loading,
-  error,
-  maxRows,
-}: StatusLineInput): string {
-  if (error) {
-    return `error: ${error}`;
-  }
+function renderHeader(props: HeaderProps) {
+  const { filePath, offset, rows, columns, loading, error, maxRows, createdBy, optimized } = props;
 
   const start = rows > 0 ? offset + 1 : offset;
   const end = rows > 0 ? offset + rows : offset;
-  const limitText = maxRows === undefined ? "" : ` / ${maxRows}`;
-  const status = loading ? "loading" : "ready";
+  const totalText = maxRows !== undefined ? `of ${maxRows.toLocaleString()}` : "";
+  const fileName = filePath.split("/").pop() ?? filePath;
 
-  return `file: ${filePath} | rows ${start}-${end}${limitText} | cols ${columns} | ${status}`;
+  if (error) {
+    return (
+      <box flexDirection="row" alignItems="center" gap={2} width="100%">
+        <text wrapMode="none" fg={THEME.accent}>
+          {"◈ parquetlens"}
+        </text>
+        <text wrapMode="none" fg="#ef4444">
+          {"error: " + error}
+        </text>
+      </box>
+    );
+  }
+
+  return (
+    <box flexDirection="row" alignItems="center" gap={2} width="100%">
+      <text wrapMode="none" fg={THEME.accent}>
+        {"◈ parquetlens"}
+      </text>
+      <text wrapMode="none" fg={THEME.muted}>
+        {"│"}
+      </text>
+      <text wrapMode="none" fg={THEME.text}>
+        {fileName}
+      </text>
+      <text wrapMode="none" fg={THEME.muted}>
+        {"│"}
+      </text>
+      <text wrapMode="none" fg={THEME.muted}>
+        {"rows "}
+      </text>
+      <text wrapMode="none" fg={THEME.text}>
+        {`${start.toLocaleString()}-${end.toLocaleString()} ${totalText}`}
+      </text>
+      <text wrapMode="none" fg={THEME.muted}>
+        {"│"}
+      </text>
+      <text wrapMode="none" fg={THEME.muted}>
+        {"cols "}
+      </text>
+      <text wrapMode="none" fg={THEME.text}>
+        {columns.toString()}
+      </text>
+      {createdBy ? (
+        <>
+          <text wrapMode="none" fg={THEME.muted}>
+            {"│"}
+          </text>
+          <text wrapMode="none" fg={THEME.muted} truncate>
+            {createdBy}
+          </text>
+        </>
+      ) : null}
+      <box flexGrow={1} />
+      {loading ? (
+        <text wrapMode="none" fg={THEME.badge}>
+          {"● loading"}
+        </text>
+      ) : null}
+      {optimized ? (
+        <text wrapMode="none" fg={THEME.badgeText} bg={THEME.badge}>
+          {" ✓ OPTIMIZED "}
+        </text>
+      ) : null}
+    </box>
+  );
 }
 
 function renderFooterLine(): string {
   return "q exit | arrows/jk scroll | pgup/pgdn page | h/l col jump | mouse wheel scroll | click cell for detail | s/enter toggle panel";
 }
 
-function buildGridLines(grid: GridState, offset: number): GridLines {
-  const columns = grid.columns.length > 0 ? grid.columns : ["(loading)"];
+function renderFooter() {
+  const controls = renderFooterLine();
+
+  return (
+    <box flexDirection="column" width="100%">
+      <text wrapMode="none" truncate fg={THEME.muted}>
+        {controls}
+      </text>
+    </box>
+  );
+}
+
+function buildGridLines(grid: GridState, offset: number, targetWidth: number): GridLines {
+  const columns: ColumnInfo[] =
+    grid.columns.length > 0 ? grid.columns : [{ name: "(loading)", type: "" }];
   const rows = grid.rows;
 
   const rowNumberWidth = Math.max(String(offset + rows.length).length, 3);
-  const columnWidths = columns.map((name, index) => {
-    const longestCell = rows.reduce((max, row) => {
-      const value = row[index] ?? "";
-      return Math.max(max, value.length);
-    }, name.length);
+  const columnWidths = columns.map((col, index) => {
+    const longestCell = rows.reduce(
+      (max, row) => {
+        const value = row[index] ?? "";
+        return Math.max(max, value.length);
+      },
+      Math.max(col.name.length, col.type.length),
+    );
     return Math.min(Math.max(longestCell, DEFAULT_COLUMN_WIDTH), MAX_COLUMN_WIDTH);
   });
 
-  const headerValues = ["#", ...columns];
+  const headerNames = ["#", ...columns.map((c) => c.name)];
+  const headerTypes = ["", ...columns.map((c) => c.type)];
   const headerWidths = [rowNumberWidth, ...columnWidths];
-  const headerLine = buildLine(headerValues, headerWidths);
+  const separatorWidth = headerWidths.length > 1 ? (headerWidths.length - 1) * 2 : 0;
+  const baseLength = headerWidths.reduce((total, width) => total + width, 0) + separatorWidth;
+
+  if (targetWidth > baseLength && headerWidths.length > 1) {
+    headerWidths[headerWidths.length - 1] += targetWidth - baseLength;
+  }
+  const headerNameLine = buildLine(headerNames, headerWidths);
+  const headerTypeLine = buildLine(headerTypes, headerWidths);
   const separatorLine = buildSeparator(headerWidths);
   const rowLines = rows.map((row, index) => {
     const rowIndex = String(offset + index + 1);
@@ -411,13 +545,15 @@ function buildGridLines(grid: GridState, offset: number): GridLines {
   const { columnRanges, scrollStops } = buildColumnRanges(headerWidths);
 
   const maxLineLength = Math.max(
-    headerLine.length,
+    headerNameLine.length,
+    headerTypeLine.length,
     separatorLine.length,
     ...rowLines.map((line) => line.length),
   );
 
   return {
-    headerLine,
+    headerNameLine,
+    headerTypeLine,
     separatorLine,
     rowLines,
     maxLineLength,
@@ -431,24 +567,24 @@ function applyHorizontalScroll(
   width: number,
   xOffset: number,
   pageSize: number,
-): { header: string; separator: string; rows: string[] } {
+): { headerName: string; headerType: string; separator: string; rows: string[] } {
   const sliceLine = (line: string) => {
     if (width <= 0) {
       return "";
     }
-    if (xOffset <= 0) {
-      return line.slice(0, width);
-    }
-    return line.slice(xOffset, xOffset + width);
+    const sliced = xOffset <= 0 ? line.slice(0, width) : line.slice(xOffset, xOffset + width);
+    return sliced.padEnd(width, " ");
   };
 
   const rows = lines.rowLines.slice(0, pageSize).map(sliceLine);
+  const emptyRow = width > 0 ? " ".repeat(width) : "";
   while (rows.length < pageSize) {
-    rows.push("");
+    rows.push(emptyRow);
   }
 
   return {
-    header: sliceLine(lines.headerLine),
+    headerName: sliceLine(lines.headerNameLine),
+    headerType: sliceLine(lines.headerTypeLine),
     separator: sliceLine(lines.separatorLine),
     rows,
   };
@@ -460,11 +596,11 @@ function buildLine(values: string[], widths: number[]): string {
       const width = widths[index] ?? DEFAULT_COLUMN_WIDTH;
       return padCell(value, width);
     })
-    .join(" | ");
+    .join("  ");
 }
 
 function buildSeparator(widths: number[]): string {
-  return widths.map((width) => "-".repeat(width)).join("-+-");
+  return "";
 }
 
 function padCell(value: string, width: number): string {
@@ -500,7 +636,7 @@ function buildColumnRanges(widths: number[]): {
     }
     cursor += width;
     if (i < widths.length - 1) {
-      cursor += 3;
+      cursor += 2;
     }
   }
 
@@ -558,11 +694,32 @@ function buildDetail(
 
   const rowIndex = Math.min(selection.row, grid.rows.length - 1);
   const colIndex = Math.min(selection.col, grid.columns.length - 1);
-  const columnName = grid.columns[colIndex] ?? "(unknown)";
+  const col = grid.columns[colIndex];
+  const columnName = col?.name ?? "(unknown)";
+  const columnType = col?.type ?? "";
   const value = grid.rows[rowIndex]?.[colIndex] ?? "";
   const absoluteRow = offset + rowIndex + 1;
 
-  return `row ${absoluteRow} • ${columnName}\n\n${value}`;
+  return `row ${absoluteRow} • ${columnName}\n${columnType}\n\n${value}`;
+}
+
+function getMetadataFlags(metadata: ParquetFileMetadata | null): {
+  optimized: boolean;
+  createdBy?: string;
+} {
+  if (!metadata) {
+    return { optimized: false };
+  }
+
+  const raw = metadata.keyValueMetadata["content_defined_chunking"];
+  const normalized = raw?.toLowerCase?.() ?? "";
+  const optimized =
+    raw !== undefined && raw !== null && normalized !== "false" && normalized !== "0";
+
+  return {
+    optimized,
+    createdBy: metadata.createdBy,
+  };
 }
 
 function tableToRows(table: import("apache-arrow").Table, columns: string[]): string[][] {
@@ -606,4 +763,8 @@ function formatCell(value: unknown): string {
   }
 
   return String(value);
+}
+
+function formatArrowType(type: import("apache-arrow").DataType): string {
+  return type.toString();
 }
