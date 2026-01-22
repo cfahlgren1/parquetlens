@@ -3,7 +3,7 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: ["src/main.ts", "src/tui.tsx"],
   format: ["esm"],
-  sourcemap: true,
+  sourcemap: false,
   banner: {
     js: `import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
