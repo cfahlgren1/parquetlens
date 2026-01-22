@@ -1,6 +1,7 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot, useKeyboard, useTerminalDimensions } from "@opentui/react";
-import React, { useEffect, useMemo, useState } from "react";
+import { spawnSync } from "node:child_process";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   ParquetSource,
@@ -99,8 +100,10 @@ function App({ source, filePath, options, onExit }: AppProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(null);
   const [knownTotalRows, setKnownTotalRows] = useState<number | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const effectiveTotal = options.maxRows ?? knownTotalRows;
   const maxOffset =
@@ -222,6 +225,24 @@ function App({ source, filePath, options, onExit }: AppProps) {
     }
   }, [error]);
 
+  useEffect(() => {
+    return () => {
+      if (noticeTimer.current) {
+        clearTimeout(noticeTimer.current);
+      }
+    };
+  }, []);
+
+  const showNotice = (message: string) => {
+    setNotice(message);
+    if (noticeTimer.current) {
+      clearTimeout(noticeTimer.current);
+    }
+    noticeTimer.current = setTimeout(() => {
+      setNotice(null);
+    }, 2000);
+  };
+
   useKeyboard((key) => {
     if ((key.ctrl && key.name === "c") || key.name === "escape" || key.name === "q") {
       if (sidebarOpen && key.name === "escape") {
@@ -284,6 +305,12 @@ function App({ source, filePath, options, onExit }: AppProps) {
 
     if (key.name === "e" && error) {
       setSidebarOpen(true);
+      return;
+    }
+
+    if (key.name === "y" && error) {
+      const copied = copyToClipboard(error);
+      showNotice(copied ? "copied error to clipboard" : "clipboard unavailable");
       return;
     }
 
@@ -425,7 +452,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
         ) : null}
       </box>
       <box backgroundColor={THEME.header} border borderColor={THEME.border}>
-        {renderFooter(Boolean(error))}
+        {renderFooter(Boolean(error), notice)}
       </box>
     </box>
   );
@@ -519,15 +546,20 @@ function renderHeader(props: HeaderProps) {
 }
 
 function renderFooterLine(hasError: boolean): string {
-  const errorHint = hasError ? " | e view error" : "";
+  const errorHint = hasError ? " | e view error | y copy error" : "";
   return `q exit | arrows/jk scroll | pgup/pgdn page | h/l col jump | mouse wheel scroll | click cell for detail | s/enter toggle panel${errorHint}`;
 }
 
-function renderFooter(hasError: boolean) {
+function renderFooter(hasError: boolean, notice: string | null) {
   const controls = renderFooterLine(hasError);
 
   return (
     <box flexDirection="column" width="100%">
+      {notice ? (
+        <text wrapMode="none" truncate fg={THEME.badge}>
+          {notice}
+        </text>
+      ) : null}
       <text wrapMode="none" truncate fg={THEME.muted}>
         {controls}
       </text>
@@ -799,4 +831,26 @@ function formatCell(value: unknown): string {
 
 function formatArrowType(type: import("apache-arrow").DataType): string {
   return type.toString();
+}
+
+function copyToClipboard(value: string): boolean {
+  const platform = process.platform;
+  const candidates: Array<[string, string[]]> = [];
+
+  if (platform === "darwin") {
+    candidates.push(["pbcopy", []]);
+  } else if (platform === "win32") {
+    candidates.push(["clip", []]);
+  } else {
+    candidates.push(["wl-copy", []], ["xclip", ["-selection", "clipboard"]]);
+  }
+
+  for (const [command, args] of candidates) {
+    const result = spawnSync(command, args, { input: value });
+    if (!result.error && result.status === 0) {
+      return true;
+    }
+  }
+
+  return false;
 }
