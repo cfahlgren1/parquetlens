@@ -2,6 +2,8 @@
 
 fast parquet previewer with a csvlens-style tui.
 
+<img width="1726" height="994" alt="image" src="https://github.com/user-attachments/assets/4ad68486-e544-4ef1-aa50-5ca855407259" />
+
 ## quick start
 
 ```bash
