@@ -22,6 +22,10 @@ npx parquetlens data.parquet
 parquetlens <file|url|-> [options]
 ```
 
+**Remote URL requirements:**
+
+- HTTP/S (including `hf://`) uses range reads via `curl`, so `curl` must be available on your PATH.
+
 **Options:**
 
 - `--limit <n>` - Number of rows to show (default: 20)
@@ -56,16 +60,18 @@ parquetlens data.parquet --plain --limit 100
 
 ## TUI Controls
 
-| Key             | Action                |
-| --------------- | --------------------- |
-| `j/k` or arrows | Scroll rows           |
-| `h/l`           | Jump columns          |
-| `PgUp/PgDn`     | Page scroll           |
-| Mouse wheel     | Scroll                |
-| Click cell      | Open detail panel     |
-| `s` or `Enter`  | Toggle detail panel   |
-| `x` or `Esc`    | Close panel (or quit) |
-| `q`             | Quit                  |
+| Key             | Action                  |
+| --------------- | ----------------------- |
+| `j/k` or arrows | Scroll rows             |
+| `h/l`           | Jump columns            |
+| `PgUp/PgDn`     | Page scroll             |
+| Mouse wheel     | Scroll                  |
+| Click cell      | Open detail panel       |
+| `s` or `Enter`  | Toggle detail panel     |
+| `e`             | Show error detail       |
+| `y`             | Copy error to clipboard |
+| `x` or `Esc`    | Close panel (or quit)   |
+| `q`             | Quit                    |
 
 ## Features
 
