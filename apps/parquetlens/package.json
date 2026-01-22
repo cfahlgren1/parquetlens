@@ -35,6 +35,7 @@
     "@opentui/core": "^0.1.74",
     "@opentui/react": "^0.1.74",
     "apache-arrow": "^17.0.0",
+    "cli-table3": "^0.6.5",
     "react": "^19.2.3"
   },
   "devDependencies": {

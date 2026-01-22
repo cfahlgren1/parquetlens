@@ -9,6 +9,7 @@ import {
   runSqlOnParquetFromStdin,
 } from "@parquetlens/parquet-reader";
 import type { Table } from "apache-arrow";
+import CliTable3 from "cli-table3";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath as nodeFileURLToPath } from "node:url";
@@ -239,8 +240,6 @@ function resolveColumns(table: Table, requested: string[]): { names: string[]; i
   };
 }
 
-const MAX_COL_WIDTH = 40;
-
 function printTable(rows: Record<string, unknown>[]): void {
   if (rows.length === 0) {
     process.stdout.write("(no rows)\n");
@@ -248,30 +247,16 @@ function printTable(rows: Record<string, unknown>[]): void {
   }
 
   const columns = Object.keys(rows[0]);
-  const widths = columns.map((col) => {
-    const maxVal = rows.reduce((max, row) => {
-      const val = String(row[col] ?? "");
-      return Math.max(max, val.length);
-    }, col.length);
-    return Math.min(maxVal, MAX_COL_WIDTH);
+  const table = new CliTable3({
+    head: columns,
+    style: { head: [], border: [] },
   });
 
-  const pad = (str: string, width: number) => {
-    if (str.length > width) {
-      return str.slice(0, width - 3) + "...";
-    }
-    return str.padEnd(width);
-  };
-
-  const header = columns.map((col, i) => pad(col, widths[i])).join("  ");
-  const separator = widths.map((w) => "-".repeat(w)).join("  ");
-
-  process.stdout.write(`${header}\n${separator}\n`);
-
   for (const row of rows) {
-    const line = columns.map((col, i) => pad(String(row[col] ?? ""), widths[i])).join("  ");
-    process.stdout.write(`${line}\n`);
+    table.push(columns.map((col) => String(row[col] ?? "")));
   }
+
+  process.stdout.write(table.toString() + "\n");
 }
 
 function formatCell(value: unknown): unknown {
