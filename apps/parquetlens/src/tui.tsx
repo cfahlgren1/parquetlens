@@ -94,119 +94,48 @@ export async function runTuiWithTable(
   root.render(<StaticApp table={table} title={title} options={options} onExit={handleExit} />);
 }
 
-type AppProps = {
-  source: ParquetSource;
-  filePath: string;
-  options: TuiOptions;
+type TableViewerProps = {
+  grid: GridState;
+  title: string;
+  offset: number;
+  setOffset: React.Dispatch<React.SetStateAction<number>>;
+  maxOffset: number | undefined;
+  totalRows: number | undefined;
+  pageSize: number;
+  loading?: boolean;
+  error?: string | null;
+  notice?: string | null;
+  metadata?: ParquetFileMetadata | null;
   onExit: () => void;
+  onCopyError?: () => void;
 };
 
-function App({ source, filePath, options, onExit }: AppProps) {
-  const { width, height } = useTerminalDimensions();
-  const pageSize = Math.max(1, height - RESERVED_LINES);
+function TableViewer({
+  grid,
+  title,
+  offset,
+  setOffset,
+  maxOffset,
+  totalRows,
+  pageSize,
+  loading = false,
+  error = null,
+  notice = null,
+  metadata = null,
+  onExit,
+  onCopyError,
+}: TableViewerProps) {
+  const { width } = useTerminalDimensions();
 
-  const [offset, setOffset] = useState(0);
   const [xOffset, setXOffset] = useState(0);
-  const [grid, setGrid] = useState<GridState>({ columns: [], rows: [] } as GridState);
   const [selection, setSelection] = useState<{ row: number; col: number } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(null);
-  const [knownTotalRows, setKnownTotalRows] = useState<number | null>(null);
-  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const effectiveTotal = options.maxRows ?? knownTotalRows;
-  const maxOffset =
-    effectiveTotal === undefined || effectiveTotal === null
-      ? undefined
-      : Math.max(0, effectiveTotal - pageSize);
   const sidebarWidth = sidebarOpen
     ? Math.min(width, Math.max(SIDEBAR_MIN_WIDTH, Math.floor(width * SIDEBAR_WIDTH_RATIO)))
     : 0;
   const tableWidth = Math.max(0, width - (sidebarOpen ? sidebarWidth + PANEL_GAP : 0));
   const tableContentWidth = Math.max(0, tableWidth - CONTENT_BORDER_WIDTH);
-
-  const columnsToRead = options.columns;
-
-  useEffect(() => {
-    return () => {
-      void source.close();
-    };
-  }, [source]);
-
-  useEffect(() => {
-    let canceled = false;
-
-    const loadWindow = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const limit = options.maxRows
-          ? Math.max(0, Math.min(pageSize, options.maxRows - offset))
-          : pageSize;
-        const readOptions: ParquetReadOptions = {
-          batchSize: options.batchSize ?? 1024,
-          columns: columnsToRead.length > 0 ? columnsToRead : undefined,
-          limit,
-          offset,
-        };
-        const table = await source.readTable(readOptions);
-        const columns: ColumnInfo[] = table.schema.fields.map((field) => ({
-          name: field.name,
-          type: formatArrowType(field.type),
-        }));
-        const rows = tableToGridRows(
-          table,
-          columns.map((c) => c.name),
-        );
-
-        if (!canceled) {
-          setGrid({ columns, rows });
-          // Detect end of file: if we got fewer rows than requested, we know the total
-          if (rows.length < limit) {
-            setKnownTotalRows(offset + rows.length);
-          }
-        }
-      } catch (caught) {
-        const message = caught instanceof Error ? caught.message : String(caught);
-        if (!canceled) {
-          setError(message);
-        }
-      } finally {
-        if (!canceled) {
-          setLoading(false);
-        }
-      }
-    };
-
-    loadWindow();
-
-    return () => {
-      canceled = true;
-    };
-  }, [columnsToRead, offset, options.batchSize, options.maxRows, pageSize, source]);
-
-  useEffect(() => {
-    let canceled = false;
-    source
-      .readMetadata()
-      .then((meta) => {
-        if (!canceled) {
-          setMetadata(meta);
-        }
-      })
-      .catch(() => {
-        if (!canceled) {
-          setMetadata(null);
-        }
-      });
-
-    return () => {
-      canceled = true;
-    };
-  }, [source]);
 
   const gridLines = useMemo(
     () => buildGridLines(grid, offset, tableContentWidth),
@@ -223,7 +152,6 @@ function App({ source, filePath, options, onExit }: AppProps) {
       setSelection(null);
       return;
     }
-
     setSelection((current) => {
       const nextRow = current ? Math.min(current.row, grid.rows.length - 1) : 0;
       const nextCol = current ? Math.min(current.col, grid.columns.length - 1) : 0;
@@ -236,24 +164,6 @@ function App({ source, filePath, options, onExit }: AppProps) {
       setSidebarOpen(true);
     }
   }, [error]);
-
-  useEffect(() => {
-    return () => {
-      if (noticeTimer.current) {
-        clearTimeout(noticeTimer.current);
-      }
-    };
-  }, []);
-
-  const showNotice = (message: string) => {
-    setNotice(message);
-    if (noticeTimer.current) {
-      clearTimeout(noticeTimer.current);
-    }
-    noticeTimer.current = setTimeout(() => {
-      setNotice(null);
-    }, 2000);
-  };
 
   useKeyboard((key) => {
     if ((key.ctrl && key.name === "c") || key.name === "escape" || key.name === "q") {
@@ -274,65 +184,48 @@ function App({ source, filePath, options, onExit }: AppProps) {
       setOffset((current) => clampOffset(current + 1));
       return;
     }
-
     if (key.name === "up" || key.name === "k") {
       setOffset((current) => clampOffset(current - 1));
       return;
     }
-
     if (key.name === "pagedown" || key.name === "space") {
       setOffset((current) => clampOffset(current + pageSize));
       return;
     }
-
     if (key.name === "pageup") {
       setOffset((current) => clampOffset(current - pageSize));
       return;
     }
-
     if (key.name === "home" || (key.name === "g" && !key.shift)) {
       setOffset(0);
       return;
     }
-
     if ((key.name === "end" || (key.name === "g" && key.shift)) && maxOffset !== undefined) {
       setOffset(maxOffset);
       return;
     }
-
-    if (key.name === "return" || key.name === "enter") {
+    if (key.name === "return" || key.name === "enter" || key.name === "s") {
       setSidebarOpen((current) => !current);
       return;
     }
-
     if (key.name === "x") {
       setSidebarOpen(false);
       return;
     }
-
-    if (key.name === "s") {
-      setSidebarOpen((current) => !current);
-      return;
-    }
-
     if (key.name === "e" && error) {
       setSidebarOpen(true);
       return;
     }
-
-    if (key.name === "y" && error) {
-      const copied = copyToClipboard(error);
-      showNotice(copied ? "copied error to clipboard" : "clipboard unavailable");
+    if (key.name === "y" && error && onCopyError) {
+      onCopyError();
       return;
     }
-
     if (key.name === "left" || key.name === "h") {
       setXOffset((current) =>
         clampScroll(findScrollStop(current, gridLines.scrollStops, -1), maxScrollX),
       );
       return;
     }
-
     if (key.name === "right" || key.name === "l") {
       setXOffset((current) =>
         clampScroll(findScrollStop(current, gridLines.scrollStops, 1), maxScrollX),
@@ -349,274 +242,15 @@ function App({ source, filePath, options, onExit }: AppProps) {
     <box flexDirection="column" width="100%" height="100%" backgroundColor={THEME.background}>
       <box backgroundColor={THEME.header} border borderColor={THEME.border}>
         {renderHeader({
-          filePath,
+          filePath: title,
           offset,
           rows: grid.rows.length,
           columns: grid.columns.length,
           loading,
           error,
-          maxRows: effectiveTotal ?? undefined,
+          maxRows: totalRows,
           optimized: metaFlags.optimized,
           createdBy: metaFlags.createdBy,
-        })}
-      </box>
-      <box flexGrow={1} flexDirection="row" gap={PANEL_GAP}>
-        <box
-          backgroundColor={THEME.panel}
-          border
-          borderColor={THEME.border}
-          flexGrow={1}
-          width={sidebarOpen ? tableWidth : "100%"}
-          onMouseScroll={(event) => {
-            if (!event.scroll) {
-              return;
-            }
-
-            const delta = Math.max(1, event.scroll.delta);
-            const step = delta * SCROLL_STEP;
-
-            if (event.scroll.direction === "up") {
-              setOffset((current) => Math.max(0, current - step));
-            } else if (event.scroll.direction === "down") {
-              setOffset((current) => {
-                const next = current + step;
-                return maxOffset === undefined ? next : Math.min(next, maxOffset);
-              });
-            } else if (event.scroll.direction === "left") {
-              setXOffset((current) => clampScroll(current - step, maxScrollX));
-            } else if (event.scroll.direction === "right") {
-              setXOffset((current) => clampScroll(current + step, maxScrollX));
-            }
-          }}
-        >
-          <text wrapMode="none" truncate fg={THEME.accent}>
-            {visibleLines.headerName}
-          </text>
-          <text wrapMode="none" truncate fg={THEME.muted}>
-            {visibleLines.headerType}
-          </text>
-          <text wrapMode="none" truncate fg={THEME.border}>
-            {visibleLines.separator}
-          </text>
-          {visibleLines.rows.map((line, index) => {
-            const isSelected = selection?.row === index;
-            return (
-              <text
-                key={`row-${index}`}
-                wrapMode="none"
-                truncate
-                fg={THEME.text}
-                bg={isSelected ? THEME.header : index % 2 === 0 ? THEME.background : THEME.stripe}
-                onMouseDown={(event) => {
-                  const target = event.target;
-                  if (!target) {
-                    return;
-                  }
-                  const localX = Math.max(0, event.x - target.x);
-                  const absoluteX = localX + xOffset;
-                  const colIndex = findColumnIndex(absoluteX, gridLines.columnRanges);
-                  if (colIndex >= 0) {
-                    setSelection({ row: index, col: colIndex });
-                    setSidebarOpen(true);
-                  }
-                }}
-              >
-                {line}
-              </text>
-            );
-          })}
-        </box>
-        {sidebarOpen ? (
-          <box
-            width="35%"
-            minWidth={24}
-            backgroundColor={THEME.panel}
-            border
-            borderColor={THEME.border}
-            title={detailTitle}
-            titleAlignment="left"
-          >
-            <text wrapMode="none" truncate fg={THEME.muted}>
-              press esc/x to close
-            </text>
-            <scrollbox scrollY flexGrow={1} backgroundColor={THEME.panel}>
-              <text
-                wrapMode="word"
-                fg={THEME.text}
-                selectable
-                selectionBg={THEME.accent}
-                selectionFg={THEME.background}
-              >
-                {detail}
-              </text>
-            </scrollbox>
-            <text
-              wrapMode="none"
-              truncate
-              fg={THEME.accent}
-              onMouseDown={() => {
-                setSidebarOpen(false);
-              }}
-            >
-              [ close ]
-            </text>
-          </box>
-        ) : null}
-      </box>
-      <box backgroundColor={THEME.header} border borderColor={THEME.border}>
-        {renderFooter(Boolean(error), notice)}
-      </box>
-    </box>
-  );
-}
-
-type StaticAppProps = {
-  table: import("apache-arrow").Table;
-  title: string;
-  options: TuiOptions;
-  onExit: () => void;
-};
-
-function StaticApp({ table, title, options, onExit }: StaticAppProps) {
-  const { width, height } = useTerminalDimensions();
-  const pageSize = Math.max(1, height - RESERVED_LINES);
-
-  const columns: ColumnInfo[] = useMemo(
-    () =>
-      table.schema.fields.map((field) => ({
-        name: field.name,
-        type: formatArrowType(field.type),
-      })),
-    [table],
-  );
-
-  const allRows = useMemo(
-    () =>
-      tableToGridRows(
-        table,
-        columns.map((c) => c.name),
-      ),
-    [table, columns],
-  );
-
-  const totalRows = allRows.length;
-
-  const [offset, setOffset] = useState(0);
-  const [xOffset, setXOffset] = useState(0);
-  const [selection, setSelection] = useState<{ row: number; col: number } | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-
-  const maxOffset = Math.max(0, totalRows - pageSize);
-  const sidebarWidth = sidebarOpen
-    ? Math.min(width, Math.max(SIDEBAR_MIN_WIDTH, Math.floor(width * SIDEBAR_WIDTH_RATIO)))
-    : 0;
-  const tableWidth = Math.max(0, width - (sidebarOpen ? sidebarWidth + PANEL_GAP : 0));
-  const tableContentWidth = Math.max(0, tableWidth - CONTENT_BORDER_WIDTH);
-
-  const visibleRows = useMemo(
-    () => allRows.slice(offset, offset + pageSize),
-    [allRows, offset, pageSize],
-  );
-
-  const grid: GridState = useMemo(
-    () => ({ columns, rows: visibleRows }),
-    [columns, visibleRows],
-  );
-
-  const gridLines = useMemo(
-    () => buildGridLines(grid, offset, tableContentWidth),
-    [grid, offset, tableContentWidth],
-  );
-  const maxScrollX = Math.max(0, gridLines.maxLineLength - tableContentWidth);
-
-  useEffect(() => {
-    setXOffset((current) => Math.min(current, maxScrollX));
-  }, [gridLines.maxLineLength, maxScrollX, tableContentWidth]);
-
-  useEffect(() => {
-    if (visibleRows.length === 0 || columns.length === 0) {
-      setSelection(null);
-      return;
-    }
-    setSelection((current) => {
-      const nextRow = current ? Math.min(current.row, visibleRows.length - 1) : 0;
-      const nextCol = current ? Math.min(current.col, columns.length - 1) : 0;
-      return { row: nextRow, col: nextCol };
-    });
-  }, [columns.length, visibleRows.length]);
-
-  useKeyboard((key) => {
-    if ((key.ctrl && key.name === "c") || key.name === "escape" || key.name === "q") {
-      if (sidebarOpen && key.name === "escape") {
-        setSidebarOpen(false);
-        return;
-      }
-      onExit();
-      return;
-    }
-
-    const clampOffset = (value: number) => Math.max(0, Math.min(value, maxOffset));
-
-    if (key.name === "down" || key.name === "j") {
-      setOffset((current) => clampOffset(current + 1));
-      return;
-    }
-    if (key.name === "up" || key.name === "k") {
-      setOffset((current) => clampOffset(current - 1));
-      return;
-    }
-    if (key.name === "pagedown" || key.name === "space") {
-      setOffset((current) => clampOffset(current + pageSize));
-      return;
-    }
-    if (key.name === "pageup") {
-      setOffset((current) => clampOffset(current - pageSize));
-      return;
-    }
-    if (key.name === "home" || (key.name === "g" && !key.shift)) {
-      setOffset(0);
-      return;
-    }
-    if (key.name === "end" || (key.name === "g" && key.shift)) {
-      setOffset(maxOffset);
-      return;
-    }
-    if (key.name === "return" || key.name === "enter" || key.name === "s") {
-      setSidebarOpen((current) => !current);
-      return;
-    }
-    if (key.name === "x") {
-      setSidebarOpen(false);
-      return;
-    }
-    if (key.name === "left" || key.name === "h") {
-      setXOffset((current) =>
-        clampScroll(findScrollStop(current, gridLines.scrollStops, -1), maxScrollX),
-      );
-      return;
-    }
-    if (key.name === "right" || key.name === "l") {
-      setXOffset((current) =>
-        clampScroll(findScrollStop(current, gridLines.scrollStops, 1), maxScrollX),
-      );
-    }
-  });
-
-  const visibleLines = applyHorizontalScroll(gridLines, tableContentWidth, xOffset, pageSize);
-  const detail = buildDetail(selection, grid, offset);
-
-  return (
-    <box flexDirection="column" width="100%" height="100%" backgroundColor={THEME.background}>
-      <box backgroundColor={THEME.header} border borderColor={THEME.border}>
-        {renderHeader({
-          filePath: title,
-          offset,
-          rows: visibleRows.length,
-          columns: columns.length,
-          loading: false,
-          error: null,
-          maxRows: totalRows,
-          optimized: false,
         })}
       </box>
       <box flexGrow={1} flexDirection="row" gap={PANEL_GAP}>
@@ -633,7 +267,10 @@ function StaticApp({ table, title, options, onExit }: StaticAppProps) {
             if (event.scroll.direction === "up") {
               setOffset((current) => Math.max(0, current - step));
             } else if (event.scroll.direction === "down") {
-              setOffset((current) => Math.min(current + step, maxOffset));
+              setOffset((current) => {
+                const next = current + step;
+                return maxOffset === undefined ? next : Math.min(next, maxOffset);
+              });
             } else if (event.scroll.direction === "left") {
               setXOffset((current) => clampScroll(current - step, maxScrollX));
             } else if (event.scroll.direction === "right") {
@@ -683,7 +320,7 @@ function StaticApp({ table, title, options, onExit }: StaticAppProps) {
             backgroundColor={THEME.panel}
             border
             borderColor={THEME.border}
-            title="cell detail"
+            title={detailTitle}
             titleAlignment="left"
           >
             <text wrapMode="none" truncate fg={THEME.muted}>
@@ -712,9 +349,203 @@ function StaticApp({ table, title, options, onExit }: StaticAppProps) {
         ) : null}
       </box>
       <box backgroundColor={THEME.header} border borderColor={THEME.border}>
-        {renderFooter(false, null)}
+        {renderFooter(!!error, notice)}
       </box>
     </box>
+  );
+}
+
+type AppProps = {
+  source: ParquetSource;
+  filePath: string;
+  options: TuiOptions;
+  onExit: () => void;
+};
+
+function App({ source, filePath, options, onExit }: AppProps) {
+  const { height } = useTerminalDimensions();
+  const pageSize = Math.max(1, height - RESERVED_LINES);
+
+  const [offset, setOffset] = useState(0);
+  const [grid, setGrid] = useState<GridState>({ columns: [], rows: [] });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(null);
+  const [knownTotalRows, setKnownTotalRows] = useState<number | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const effectiveTotal = options.maxRows ?? knownTotalRows;
+  const maxOffset =
+    effectiveTotal === undefined || effectiveTotal === null
+      ? undefined
+      : Math.max(0, effectiveTotal - pageSize);
+
+  const columnsToRead = options.columns;
+
+  // Cleanup source on unmount
+  useEffect(() => {
+    return () => {
+      void source.close();
+    };
+  }, [source]);
+
+  // Load data when offset changes
+  useEffect(() => {
+    let canceled = false;
+
+    const loadWindow = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const limit = options.maxRows
+          ? Math.max(0, Math.min(pageSize, options.maxRows - offset))
+          : pageSize;
+        const readOptions: ParquetReadOptions = {
+          batchSize: options.batchSize ?? 1024,
+          columns: columnsToRead.length > 0 ? columnsToRead : undefined,
+          limit,
+          offset,
+        };
+        const table = await source.readTable(readOptions);
+        const columns: ColumnInfo[] = table.schema.fields.map((field) => ({
+          name: field.name,
+          type: formatArrowType(field.type),
+        }));
+        const rows = tableToGridRows(
+          table,
+          columns.map((c) => c.name),
+        );
+
+        if (!canceled) {
+          setGrid({ columns, rows });
+          if (rows.length < limit) {
+            setKnownTotalRows(offset + rows.length);
+          }
+        }
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : String(caught);
+        if (!canceled) {
+          setError(message);
+        }
+      } finally {
+        if (!canceled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadWindow();
+    return () => {
+      canceled = true;
+    };
+  }, [columnsToRead, offset, options.batchSize, options.maxRows, pageSize, source]);
+
+  // Load metadata
+  useEffect(() => {
+    let canceled = false;
+    source
+      .readMetadata()
+      .then((meta) => {
+        if (!canceled) setMetadata(meta);
+      })
+      .catch(() => {
+        if (!canceled) setMetadata(null);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [source]);
+
+  // Cleanup notice timer
+  useEffect(() => {
+    return () => {
+      if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    };
+  }, []);
+
+  const handleCopyError = () => {
+    if (!error) return;
+    const copied = copyToClipboard(error);
+    setNotice(copied ? "copied error to clipboard" : "clipboard unavailable");
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), 2000);
+  };
+
+  return (
+    <TableViewer
+      grid={grid}
+      title={filePath}
+      offset={offset}
+      setOffset={setOffset}
+      maxOffset={maxOffset}
+      totalRows={effectiveTotal ?? undefined}
+      pageSize={pageSize}
+      loading={loading}
+      error={error}
+      notice={notice}
+      metadata={metadata}
+      onExit={onExit}
+      onCopyError={handleCopyError}
+    />
+  );
+}
+
+type StaticAppProps = {
+  table: import("apache-arrow").Table;
+  title: string;
+  options: TuiOptions;
+  onExit: () => void;
+};
+
+function StaticApp({ table, title, options, onExit }: StaticAppProps) {
+  const { height } = useTerminalDimensions();
+  const pageSize = Math.max(1, height - RESERVED_LINES);
+
+  const [offset, setOffset] = useState(0);
+
+  const columns: ColumnInfo[] = useMemo(
+    () =>
+      table.schema.fields.map((field) => ({
+        name: field.name,
+        type: formatArrowType(field.type),
+      })),
+    [table],
+  );
+
+  const allRows = useMemo(
+    () =>
+      tableToGridRows(
+        table,
+        columns.map((c) => c.name),
+      ),
+    [table, columns],
+  );
+
+  const totalRows = allRows.length;
+  const maxOffset = Math.max(0, totalRows - pageSize);
+
+  const visibleRows = useMemo(
+    () => allRows.slice(offset, offset + pageSize),
+    [allRows, offset, pageSize],
+  );
+
+  const grid: GridState = useMemo(
+    () => ({ columns, rows: visibleRows }),
+    [columns, visibleRows],
+  );
+
+  return (
+    <TableViewer
+      grid={grid}
+      title={title}
+      offset={offset}
+      setOffset={setOffset}
+      maxOffset={maxOffset}
+      totalRows={totalRows}
+      pageSize={pageSize}
+      onExit={onExit}
+    />
   );
 }
 
