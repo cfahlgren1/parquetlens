@@ -196,9 +196,18 @@ function App({ source, filePath, options, onExit }: AppProps) {
     };
   }, [source]);
 
+  const skeletonGrid = useMemo(() => {
+    if (!loading || grid.rows.length > 0) {
+      return null;
+    }
+
+    return buildSkeletonGrid(grid.columns, columnsToRead, pageSize);
+  }, [columnsToRead, grid.columns, grid.rows.length, loading, pageSize]);
+
+  const displayGrid = skeletonGrid ?? grid;
   const gridLines = useMemo(
-    () => buildGridLines(grid, offset, tableContentWidth),
-    [grid, offset, tableContentWidth],
+    () => buildGridLines(displayGrid, offset, tableContentWidth),
+    [displayGrid, offset, tableContentWidth],
   );
   const maxScrollX = Math.max(0, gridLines.maxLineLength - tableContentWidth);
 
@@ -332,6 +341,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
   const detail = error ? buildErrorDetail(error) : buildDetail(selection, grid, offset);
   const detailTitle = error ? "error detail" : "cell detail";
   const metaFlags = getMetadataFlags(metadata);
+  const displayRows = skeletonGrid ? skeletonGrid.rows.length : grid.rows.length;
 
   return (
     <box flexDirection="column" width="100%" height="100%" backgroundColor={THEME.background}>
@@ -339,7 +349,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
         {renderHeader({
           filePath,
           offset,
-          rows: grid.rows.length,
+          rows: displayRows,
           columns: grid.columns.length,
           loading,
           error,
@@ -396,6 +406,9 @@ function App({ source, filePath, options, onExit }: AppProps) {
                 fg={THEME.text}
                 bg={isSelected ? THEME.header : index % 2 === 0 ? THEME.background : THEME.stripe}
                 onMouseDown={(event) => {
+                  if (skeletonGrid) {
+                    return;
+                  }
                   const target = event.target;
                   if (!target) {
                     return;
@@ -831,6 +844,22 @@ function formatCell(value: unknown): string {
 
 function formatArrowType(type: import("apache-arrow").DataType): string {
   return type.toString();
+}
+
+function buildSkeletonGrid(
+  columns: ColumnInfo[],
+  fallbackColumns: string[],
+  rowCount: number,
+): GridState {
+  const baseColumns =
+    columns.length > 0
+      ? columns
+      : fallbackColumns.length > 0
+        ? fallbackColumns.map((name) => ({ name, type: "" }))
+        : [{ name: "(loading)", type: "" }];
+  const rows = Array.from({ length: rowCount }, () => baseColumns.map(() => "...."));
+
+  return { columns: baseColumns, rows };
 }
 
 function copyToClipboard(value: string): boolean {
