@@ -7,6 +7,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.join(__dirname, "../dist/main.js");
 const FIXTURE_PATH = path.join(__dirname, "../test/fixtures/sample.parquet");
 
+function parseJsonLines(stdout: string): Record<string, unknown>[] {
+  return stdout
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
 function runCli(
   args: string[],
   timeout = 30000,
@@ -74,13 +83,7 @@ describe("local parquet fixture", () => {
     const { stdout, code } = await runCli([FIXTURE_PATH, "--json", "--no-schema", "--limit", "2"]);
 
     expect(code).toBe(0);
-    const lines = stdout
-      .trim()
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    const rows = lines.map((line) => JSON.parse(line));
+    const rows = parseJsonLines(stdout);
     expect(rows.length).toBeGreaterThan(0);
     expect(rows[0]?.city).toBe("Seattle");
   });
@@ -96,11 +99,7 @@ describe("SQL queries", () => {
     ]);
 
     expect(code).toBe(0);
-    const lines = stdout
-      .trim()
-      .split("\n")
-      .filter(Boolean);
-    const rows = lines.map((line) => JSON.parse(line));
+    const rows = parseJsonLines(stdout);
     expect(rows.length).toBe(2);
     expect(rows[0]).toHaveProperty("city");
   });
@@ -114,11 +113,7 @@ describe("SQL queries", () => {
     ]);
 
     expect(code).toBe(0);
-    const lines = stdout
-      .trim()
-      .split("\n")
-      .filter(Boolean);
-    const rows = lines.map((line) => JSON.parse(line));
+    const rows = parseJsonLines(stdout);
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((row) => row.city === "Seattle")).toBe(true);
   });
@@ -132,11 +127,7 @@ describe("SQL queries", () => {
     ]);
 
     expect(code).toBe(0);
-    const lines = stdout
-      .trim()
-      .split("\n")
-      .filter(Boolean);
-    const rows = lines.map((line) => JSON.parse(line));
+    const rows = parseJsonLines(stdout);
     expect(rows.length).toBeGreaterThan(0);
     expect(rows[0]).toHaveProperty("city");
     expect(rows[0]).toHaveProperty("count");
@@ -151,11 +142,7 @@ describe("SQL queries", () => {
     ]);
 
     expect(code).toBe(0);
-    const lines = stdout
-      .trim()
-      .split("\n")
-      .filter(Boolean);
-    const rows = lines.map((line) => JSON.parse(line));
+    const rows = parseJsonLines(stdout);
     expect(rows.length).toBe(1);
     expect(Object.keys(rows[0])).toEqual(["city", "state"]);
   });

@@ -62,8 +62,7 @@ const THEME = {
   stripe: "#252733",
 };
 
-export async function runTui(input: string, options: TuiOptions): Promise<void> {
-  const source = await openParquetSource(input);
+async function createTuiRenderer() {
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
     useAlternateScreen: true,
@@ -73,12 +72,16 @@ export async function runTui(input: string, options: TuiOptions): Promise<void> 
   });
   renderer.setTerminalTitle("parquetlens");
   const root = createRoot(renderer);
-
   const handleExit = () => {
     root.unmount();
     renderer.destroy();
   };
+  return { root, handleExit };
+}
 
+export async function runTui(input: string, options: TuiOptions): Promise<void> {
+  const source = await openParquetSource(input);
+  const { root, handleExit } = await createTuiRenderer();
   root.render(<App source={source} filePath={input} options={options} onExit={handleExit} />);
 }
 
@@ -87,21 +90,7 @@ export async function runTuiWithTable(
   title: string,
   options: TuiOptions,
 ): Promise<void> {
-  const renderer = await createCliRenderer({
-    exitOnCtrlC: true,
-    useAlternateScreen: true,
-    useConsole: false,
-    useMouse: true,
-    enableMouseMovement: true,
-  });
-  renderer.setTerminalTitle("parquetlens");
-  const root = createRoot(renderer);
-
-  const handleExit = () => {
-    root.unmount();
-    renderer.destroy();
-  };
-
+  const { root, handleExit } = await createTuiRenderer();
   root.render(<StaticApp table={table} title={title} options={options} onExit={handleExit} />);
 }
 
@@ -168,7 +157,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
           name: field.name,
           type: formatArrowType(field.type),
         }));
-        const rows = tableToRows(
+        const rows = tableToGridRows(
           table,
           columns.map((c) => c.name),
         );
@@ -503,7 +492,7 @@ function StaticApp({ table, title, options, onExit }: StaticAppProps) {
 
   const allRows = useMemo(
     () =>
-      tableToRows(
+      tableToGridRows(
         table,
         columns.map((c) => c.name),
       ),
@@ -1057,7 +1046,7 @@ function getMetadataFlags(metadata: ParquetFileMetadata | null): {
   };
 }
 
-function tableToRows(table: import("apache-arrow").Table, columns: string[]): string[][] {
+function tableToGridRows(table: import("apache-arrow").Table, columns: string[]): string[][] {
   const rows: string[][] = [];
 
   for (const batch of table.batches) {

@@ -267,32 +267,6 @@ function formatCell(value: unknown): unknown {
   return value;
 }
 
-function tableToRows(table: Table, limit: number): Record<string, unknown>[] {
-  const fields = table.schema.fields.map((field) => field.name);
-  const rows: Record<string, unknown>[] = [];
-
-  for (const batch of table.batches) {
-    const vectors = fields.map((_, index) => batch.getChildAt(index));
-
-    for (let rowIndex = 0; rowIndex < batch.numRows; rowIndex += 1) {
-      if (rows.length >= limit) {
-        return rows;
-      }
-
-      const row: Record<string, unknown> = {};
-
-      for (let colIndex = 0; colIndex < fields.length; colIndex += 1) {
-        const vector = vectors[colIndex];
-        row[fields[colIndex]] = formatCell(vector?.get(rowIndex));
-      }
-
-      rows.push(row);
-    }
-  }
-
-  return rows;
-}
-
 function previewRows(
   table: Table,
   limit: number,
@@ -395,7 +369,7 @@ async function main(): Promise<void> {
       process.stderr.write("parquetlens: bun not found, falling back to plain output\n");
     }
 
-    const rows = tableToRows(table, options.limit);
+    const rows = previewRows(table, options.limit, []);
 
     if (options.json) {
       for (const row of rows) {
