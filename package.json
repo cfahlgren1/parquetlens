@@ -1,0 +1,22 @@
+{
+  "name": "parquetlens",
+  "private": true,
+  "packageManager": "pnpm@9.12.3",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm -C apps/parquetlens dev",
+    "format": "prettier --write .",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "prettier": "^3.2.5",
+    "tsup": "^8.0.2",
+    "tsx": "^4.15.0",
+    "typescript": "^5.5.4"
+  }
+}

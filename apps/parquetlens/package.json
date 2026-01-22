@@ -1,0 +1,24 @@
+{
+  "name": "parquetlens",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "parquetlens": "dist/main.js"
+  },
+  "scripts": {
+    "dev": "pnpm -C ../../packages/parquet-reader build && tsx src/main.ts",
+    "build": "tsup src/main.ts src/tui.tsx --format esm --sourcemap --external @opentui/core --external @opentui/react --external react",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.1.74",
+    "@opentui/react": "^0.1.74",
+    "@parquetlens/parquet-reader": "workspace:*",
+    "apache-arrow": "^21.1.0",
+    "react": "^19.2.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.9"
+  }
+}
