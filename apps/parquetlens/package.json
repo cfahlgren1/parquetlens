@@ -26,18 +26,20 @@
   "scripts": {
     "dev": "pnpm -C ../../packages/parquet-reader build && tsx src/main.ts",
     "build": "tsup",
+    "test": "vitest run",
     "prepublishOnly": "pnpm run build",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@duckdb/duckdb-wasm": "^1.32.0",
     "@opentui/core": "^0.1.74",
     "@opentui/react": "^0.1.74",
-    "apache-arrow": "^21.1.0",
-    "parquet-wasm": "^0.7.1",
+    "apache-arrow": "^17.0.0",
     "react": "^19.2.3"
   },
   "devDependencies": {
     "@parquetlens/parquet-reader": "workspace:*",
-    "@types/react": "^19.2.9"
+    "@types/react": "^19.2.9",
+    "vitest": "^4.0.18"
   }
 }

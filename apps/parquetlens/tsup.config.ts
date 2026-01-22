@@ -12,12 +12,6 @@ const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);`,
   },
-  external: [
-    "@opentui/core",
-    "@opentui/react",
-    "react",
-    "apache-arrow",
-    "parquet-wasm/esm",
-  ],
+  external: ["@opentui/core", "@opentui/react", "react", "apache-arrow", "@duckdb/duckdb-wasm"],
   noExternal: ["@parquetlens/parquet-reader"],
 });

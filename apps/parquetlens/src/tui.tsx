@@ -1,13 +1,14 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot, useKeyboard, useTerminalDimensions } from "@opentui/react";
-import React, { useEffect, useMemo, useState } from "react";
+import { spawnSync } from "node:child_process";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import type {
-  ParquetBufferSource,
+  ParquetSource,
   ParquetFileMetadata,
   ParquetReadOptions,
 } from "@parquetlens/parquet-reader";
-import { openParquetBufferFromPath } from "@parquetlens/parquet-reader";
+import { openParquetSource } from "@parquetlens/parquet-reader";
 
 type TuiOptions = {
   columns: string[];
@@ -61,8 +62,8 @@ const THEME = {
   stripe: "#252733",
 };
 
-export async function runTui(filePath: string, options: TuiOptions): Promise<void> {
-  const source = await openParquetBufferFromPath(filePath);
+export async function runTui(input: string, options: TuiOptions): Promise<void> {
+  const source = await openParquetSource(input);
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
     useAlternateScreen: true,
@@ -78,11 +79,11 @@ export async function runTui(filePath: string, options: TuiOptions): Promise<voi
     renderer.destroy();
   };
 
-  root.render(<App source={source} filePath={filePath} options={options} onExit={handleExit} />);
+  root.render(<App source={source} filePath={input} options={options} onExit={handleExit} />);
 }
 
 type AppProps = {
-  source: ParquetBufferSource;
+  source: ParquetSource;
   filePath: string;
   options: TuiOptions;
   onExit: () => void;
@@ -91,8 +92,6 @@ type AppProps = {
 function App({ source, filePath, options, onExit }: AppProps) {
   const { width, height } = useTerminalDimensions();
   const pageSize = Math.max(1, height - RESERVED_LINES);
-  const maxOffset =
-    options.maxRows === undefined ? undefined : Math.max(0, options.maxRows - pageSize);
 
   const [offset, setOffset] = useState(0);
   const [xOffset, setXOffset] = useState(0);
@@ -101,7 +100,16 @@ function App({ source, filePath, options, onExit }: AppProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(null);
+  const [knownTotalRows, setKnownTotalRows] = useState<number | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const effectiveTotal = options.maxRows ?? knownTotalRows;
+  const maxOffset =
+    effectiveTotal === undefined || effectiveTotal === null
+      ? undefined
+      : Math.max(0, effectiveTotal - pageSize);
   const sidebarWidth = sidebarOpen
     ? Math.min(width, Math.max(SIDEBAR_MIN_WIDTH, Math.floor(width * SIDEBAR_WIDTH_RATIO)))
     : 0;
@@ -109,6 +117,12 @@ function App({ source, filePath, options, onExit }: AppProps) {
   const tableContentWidth = Math.max(0, tableWidth - CONTENT_BORDER_WIDTH);
 
   const columnsToRead = options.columns;
+
+  useEffect(() => {
+    return () => {
+      void source.close();
+    };
+  }, [source]);
 
   useEffect(() => {
     let canceled = false;
@@ -138,6 +152,10 @@ function App({ source, filePath, options, onExit }: AppProps) {
 
         if (!canceled) {
           setGrid({ columns, rows });
+          // Detect end of file: if we got fewer rows than requested, we know the total
+          if (rows.length < limit) {
+            setKnownTotalRows(offset + rows.length);
+          }
         }
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : String(caught);
@@ -201,6 +219,30 @@ function App({ source, filePath, options, onExit }: AppProps) {
     });
   }, [grid.columns.length, grid.rows.length]);
 
+  useEffect(() => {
+    if (error) {
+      setSidebarOpen(true);
+    }
+  }, [error]);
+
+  useEffect(() => {
+    return () => {
+      if (noticeTimer.current) {
+        clearTimeout(noticeTimer.current);
+      }
+    };
+  }, []);
+
+  const showNotice = (message: string) => {
+    setNotice(message);
+    if (noticeTimer.current) {
+      clearTimeout(noticeTimer.current);
+    }
+    noticeTimer.current = setTimeout(() => {
+      setNotice(null);
+    }, 2000);
+  };
+
   useKeyboard((key) => {
     if ((key.ctrl && key.name === "c") || key.name === "escape" || key.name === "q") {
       if (sidebarOpen && key.name === "escape") {
@@ -261,6 +303,17 @@ function App({ source, filePath, options, onExit }: AppProps) {
       return;
     }
 
+    if (key.name === "e" && error) {
+      setSidebarOpen(true);
+      return;
+    }
+
+    if (key.name === "y" && error) {
+      const copied = copyToClipboard(error);
+      showNotice(copied ? "copied error to clipboard" : "clipboard unavailable");
+      return;
+    }
+
     if (key.name === "left" || key.name === "h") {
       setXOffset((current) =>
         clampScroll(findScrollStop(current, gridLines.scrollStops, -1), maxScrollX),
@@ -276,7 +329,8 @@ function App({ source, filePath, options, onExit }: AppProps) {
   });
 
   const visibleLines = applyHorizontalScroll(gridLines, tableContentWidth, xOffset, pageSize);
-  const detail = buildDetail(selection, grid, offset);
+  const detail = error ? buildErrorDetail(error) : buildDetail(selection, grid, offset);
+  const detailTitle = error ? "error detail" : "cell detail";
   const metaFlags = getMetadataFlags(metadata);
 
   return (
@@ -289,7 +343,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
           columns: grid.columns.length,
           loading,
           error,
-          maxRows: options.maxRows,
+          maxRows: effectiveTotal ?? undefined,
           optimized: metaFlags.optimized,
           createdBy: metaFlags.createdBy,
         })}
@@ -367,7 +421,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
             backgroundColor={THEME.panel}
             border
             borderColor={THEME.border}
-            title="cell detail"
+            title={detailTitle}
             titleAlignment="left"
           >
             <text wrapMode="none" truncate fg={THEME.muted}>
@@ -398,7 +452,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
         ) : null}
       </box>
       <box backgroundColor={THEME.header} border borderColor={THEME.border}>
-        {renderFooter()}
+        {renderFooter(Boolean(error), notice)}
       </box>
     </box>
   );
@@ -491,15 +545,21 @@ function renderHeader(props: HeaderProps) {
   );
 }
 
-function renderFooterLine(): string {
-  return "q exit | arrows/jk scroll | pgup/pgdn page | h/l col jump | mouse wheel scroll | click cell for detail | s/enter toggle panel";
+function renderFooterLine(hasError: boolean): string {
+  const errorHint = hasError ? " | e view error | y copy error" : "";
+  return `q exit | arrows/jk scroll | pgup/pgdn page | h/l col jump | mouse wheel scroll | click cell for detail | s/enter toggle panel${errorHint}`;
 }
 
-function renderFooter() {
-  const controls = renderFooterLine();
+function renderFooter(hasError: boolean, notice: string | null) {
+  const controls = renderFooterLine(hasError);
 
   return (
     <box flexDirection="column" width="100%">
+      {notice ? (
+        <text wrapMode="none" truncate fg={THEME.badge}>
+          {notice}
+        </text>
+      ) : null}
       <text wrapMode="none" truncate fg={THEME.muted}>
         {controls}
       </text>
@@ -703,6 +763,10 @@ function buildDetail(
   return `row ${absoluteRow} • ${columnName}\n${columnType}\n\n${value}`;
 }
 
+function buildErrorDetail(message: string): string {
+  return `error\n\n${message}`;
+}
+
 function getMetadataFlags(metadata: ParquetFileMetadata | null): {
   optimized: boolean;
   createdBy?: string;
@@ -767,4 +831,26 @@ function formatCell(value: unknown): string {
 
 function formatArrowType(type: import("apache-arrow").DataType): string {
   return type.toString();
+}
+
+function copyToClipboard(value: string): boolean {
+  const platform = process.platform;
+  const candidates: Array<[string, string[]]> = [];
+
+  if (platform === "darwin") {
+    candidates.push(["pbcopy", []]);
+  } else if (platform === "win32") {
+    candidates.push(["clip", []]);
+  } else {
+    candidates.push(["wl-copy", []], ["xclip", ["-selection", "clipboard"]]);
+  }
+
+  for (const [command, args] of candidates) {
+    const result = spawnSync(command, args, { input: value });
+    if (!result.error && result.status === 0) {
+      return true;
+    }
+  }
+
+  return false;
 }
