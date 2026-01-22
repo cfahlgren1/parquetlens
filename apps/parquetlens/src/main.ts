@@ -3,10 +3,19 @@ import {
   ParquetReadOptions,
   readParquetTableFromPath,
   readParquetTableFromStdin,
+  readParquetTableFromUrl,
+  resolveParquetUrl,
 } from "@parquetlens/parquet-reader";
 import type { Table } from "apache-arrow";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Polyfill __filename for ESM (tsx dev mode)
+const __filename =
+  typeof globalThis.__filename !== "undefined"
+    ? globalThis.__filename
+    : fileURLToPath(import.meta.url);
 
 type TuiMode = "auto" | "on" | "off";
 
@@ -154,7 +163,7 @@ function readOptionValue(
 }
 
 function printUsage(): void {
-  const helpText = `parquetlens <file|-> [options]
+  const helpText = `parquetlens <file|url|-> [options]
 
 options:
   --limit, --limit=<n>       number of rows to show (default: ${DEFAULT_LIMIT})
@@ -169,7 +178,8 @@ options:
 examples:
   parquetlens data.parquet --limit 25
   parquetlens data.parquet --columns=city,state
-  parquetlens data.parquet --tui
+  parquetlens hf://datasets/cfahlgren1/hub-stats/daily_papers.parquet
+  parquetlens https://huggingface.co/datasets/cfahlgren1/hub-stats/resolve/main/daily_papers.parquet
   parquetlens data.parquet --plain
   parquetlens - < input.parquet
 `;
@@ -277,11 +287,15 @@ async function loadTable(
   const source = input ?? stdinFallback;
 
   if (!source) {
-    throw new Error("missing input file (pass a path or pipe stdin)");
+    throw new Error("missing input file (pass a path, URL, or pipe stdin)");
   }
 
   if (source === "-") {
     return readParquetTableFromStdin("stdin.parquet", readOptions);
+  }
+
+  if (resolveParquetUrl(source)) {
+    return readParquetTableFromUrl(source, readOptions);
   }
 
   return readParquetTableFromPath(source, readOptions);
@@ -305,7 +319,9 @@ async function main(): Promise<void> {
   const wantsTui = resolveTuiMode(options.tuiMode, options);
   if (wantsTui) {
     if (!input || input === "-") {
-      process.stderr.write("parquetlens: tui mode requires a file path (stdin not supported)\n");
+      process.stderr.write(
+        "parquetlens: tui mode requires a file path or URL (stdin not supported)\n",
+      );
       process.exitCode = 1;
       return;
     }
@@ -321,6 +337,7 @@ async function main(): Promise<void> {
     } else {
       const { runTui } = await importTuiModule();
       const maxRows = limitSpecified ? options.limit : undefined;
+
       await runTui(input, { columns: options.columns, maxRows });
       return;
     }

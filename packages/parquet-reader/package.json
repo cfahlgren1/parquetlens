@@ -9,11 +9,11 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --sourcemap",
+    "build": "tsup src/index.ts --format esm --dts --sourcemap --external @duckdb/duckdb-wasm",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "apache-arrow": "^21.1.0",
-    "parquet-wasm": "^0.7.1"
+    "@duckdb/duckdb-wasm": "^1.32.0",
+    "apache-arrow": "^17.0.0"
   }
 }

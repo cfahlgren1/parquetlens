@@ -3,11 +3,11 @@ import { createRoot, useKeyboard, useTerminalDimensions } from "@opentui/react";
 import React, { useEffect, useMemo, useState } from "react";
 
 import type {
-  ParquetBufferSource,
+  ParquetSource,
   ParquetFileMetadata,
   ParquetReadOptions,
 } from "@parquetlens/parquet-reader";
-import { openParquetBufferFromPath } from "@parquetlens/parquet-reader";
+import { openParquetSource } from "@parquetlens/parquet-reader";
 
 type TuiOptions = {
   columns: string[];
@@ -61,8 +61,8 @@ const THEME = {
   stripe: "#252733",
 };
 
-export async function runTui(filePath: string, options: TuiOptions): Promise<void> {
-  const source = await openParquetBufferFromPath(filePath);
+export async function runTui(input: string, options: TuiOptions): Promise<void> {
+  const source = await openParquetSource(input);
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
     useAlternateScreen: true,
@@ -78,11 +78,11 @@ export async function runTui(filePath: string, options: TuiOptions): Promise<voi
     renderer.destroy();
   };
 
-  root.render(<App source={source} filePath={filePath} options={options} onExit={handleExit} />);
+  root.render(<App source={source} filePath={input} options={options} onExit={handleExit} />);
 }
 
 type AppProps = {
-  source: ParquetBufferSource;
+  source: ParquetSource;
   filePath: string;
   options: TuiOptions;
   onExit: () => void;
@@ -91,8 +91,6 @@ type AppProps = {
 function App({ source, filePath, options, onExit }: AppProps) {
   const { width, height } = useTerminalDimensions();
   const pageSize = Math.max(1, height - RESERVED_LINES);
-  const maxOffset =
-    options.maxRows === undefined ? undefined : Math.max(0, options.maxRows - pageSize);
 
   const [offset, setOffset] = useState(0);
   const [xOffset, setXOffset] = useState(0);
@@ -102,6 +100,13 @@ function App({ source, filePath, options, onExit }: AppProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(null);
+  const [knownTotalRows, setKnownTotalRows] = useState<number | null>(null);
+
+  const effectiveTotal = options.maxRows ?? knownTotalRows;
+  const maxOffset =
+    effectiveTotal === undefined || effectiveTotal === null
+      ? undefined
+      : Math.max(0, effectiveTotal - pageSize);
   const sidebarWidth = sidebarOpen
     ? Math.min(width, Math.max(SIDEBAR_MIN_WIDTH, Math.floor(width * SIDEBAR_WIDTH_RATIO)))
     : 0;
@@ -109,6 +114,12 @@ function App({ source, filePath, options, onExit }: AppProps) {
   const tableContentWidth = Math.max(0, tableWidth - CONTENT_BORDER_WIDTH);
 
   const columnsToRead = options.columns;
+
+  useEffect(() => {
+    return () => {
+      void source.close();
+    };
+  }, [source]);
 
   useEffect(() => {
     let canceled = false;
@@ -138,6 +149,10 @@ function App({ source, filePath, options, onExit }: AppProps) {
 
         if (!canceled) {
           setGrid({ columns, rows });
+          // Detect end of file: if we got fewer rows than requested, we know the total
+          if (rows.length < limit) {
+            setKnownTotalRows(offset + rows.length);
+          }
         }
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : String(caught);
@@ -289,7 +304,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
           columns: grid.columns.length,
           loading,
           error,
-          maxRows: options.maxRows,
+          maxRows: effectiveTotal ?? undefined,
           optimized: metaFlags.optimized,
           createdBy: metaFlags.createdBy,
         })}
