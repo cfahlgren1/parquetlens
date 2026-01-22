@@ -1,24 +1,43 @@
 {
   "name": "parquetlens",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "A fast, interactive TUI for viewing Parquet files",
   "type": "module",
+  "license": "MIT",
+  "author": "Caleb Fahlgren",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cfahlgren1/parquetlens"
+  },
+  "keywords": [
+    "parquet",
+    "viewer",
+    "tui",
+    "cli",
+    "data",
+    "arrow"
+  ],
   "bin": {
     "parquetlens": "dist/main.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "dev": "pnpm -C ../../packages/parquet-reader build && tsx src/main.ts",
-    "build": "tsup src/main.ts src/tui.tsx --format esm --sourcemap --external @opentui/core --external @opentui/react --external react",
+    "build": "tsup",
+    "prepublishOnly": "pnpm run build",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@opentui/core": "^0.1.74",
     "@opentui/react": "^0.1.74",
-    "@parquetlens/parquet-reader": "workspace:*",
     "apache-arrow": "^21.1.0",
+    "parquet-wasm": "^0.7.1",
     "react": "^19.2.3"
   },
   "devDependencies": {
+    "@parquetlens/parquet-reader": "workspace:*",
     "@types/react": "^19.2.9"
   }
 }

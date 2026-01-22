@@ -7,7 +7,6 @@ import {
 import type { Table } from "apache-arrow";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 type TuiMode = "auto" | "on" | "off";
 
@@ -385,8 +384,7 @@ function spawnBun(argv: string[]): boolean {
     return false;
   }
 
-  const entry = fileURLToPath(import.meta.url);
-  const result = spawnSync("bun", [entry, ...argv.slice(1)], {
+  const result = spawnSync("bun", [__filename, ...argv.slice(1)], {
     stdio: "inherit",
     env: { ...process.env, PARQUETLENS_BUN: "1" },
   });
@@ -396,8 +394,7 @@ function spawnBun(argv: string[]): boolean {
 }
 
 async function importTuiModule(): Promise<typeof import("./tui.js")> {
-  const entry = fileURLToPath(import.meta.url);
-  const extension = path.extname(entry);
+  const extension = path.extname(__filename);
   const modulePath = extension === ".js" ? "./tui.js" : "./tui.tsx";
   return import(modulePath);
 }

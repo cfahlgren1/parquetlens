@@ -7,10 +7,23 @@ import path from "node:path";
 import { pipeline } from "node:stream/promises";
 
 import { tableFromIPC, Table } from "apache-arrow";
-import { ParquetFile, readParquet, ReaderOptions } from "parquet-wasm";
+import initWasm, { ParquetFile, readParquet, type ReaderOptions } from "parquet-wasm/esm";
 
 const BlobCtor: typeof Blob =
   typeof Blob === "undefined" ? (NodeBlob as unknown as typeof Blob) : Blob;
+
+let wasmInitialized = false;
+let wasmInitPromise: Promise<void> | null = null;
+
+async function ensureWasmInitialized(): Promise<void> {
+  if (wasmInitialized) return;
+  if (!wasmInitPromise) {
+    wasmInitPromise = initWasm().then(() => {
+      wasmInitialized = true;
+    });
+  }
+  return wasmInitPromise;
+}
 
 export type TempParquetFile = {
   path: string;
@@ -30,14 +43,15 @@ export type ParquetFileMetadata = {
 export type ParquetBufferSource = {
   buffer: Uint8Array;
   byteLength: number;
-  readTable: (options?: ParquetReadOptions) => Table;
+  readTable: (options?: ParquetReadOptions) => Promise<Table>;
   readMetadata: () => Promise<ParquetFileMetadata>;
 };
 
-export function readParquetTableFromBuffer(
+export async function readParquetTableFromBuffer(
   buffer: Uint8Array,
   options?: ParquetReadOptions,
-): Table {
+): Promise<Table> {
+  await ensureWasmInitialized();
   const wasmTable = readParquet(buffer, options ?? undefined);
   const ipcStream = wasmTable.intoIPCStream();
   return tableFromIPC(ipcStream);
@@ -75,6 +89,7 @@ export async function readParquetTableFromPath(
 export async function readParquetMetadataFromBuffer(
   buffer: Uint8Array,
 ): Promise<ParquetFileMetadata> {
+  await ensureWasmInitialized();
   const blobInput = new Uint8Array(buffer).buffer as ArrayBuffer;
   const file = await ParquetFile.fromFile(new BlobCtor([blobInput]));
   const meta = file.metadata();

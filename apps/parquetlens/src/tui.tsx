@@ -113,7 +113,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
   useEffect(() => {
     let canceled = false;
 
-    const loadWindow = () => {
+    const loadWindow = async () => {
       setLoading(true);
       setError(null);
       try {
@@ -126,7 +126,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
           limit,
           offset,
         };
-        const table = source.readTable(readOptions);
+        const table = await source.readTable(readOptions);
         const columns: ColumnInfo[] = table.schema.fields.map((field) => ({
           name: field.name,
           type: formatArrowType(field.type),

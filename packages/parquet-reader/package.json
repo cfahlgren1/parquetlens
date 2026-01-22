@@ -2,13 +2,14 @@
   "name": "@parquetlens/parquet-reader",
   "version": "0.0.0",
   "private": true,
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format cjs --dts --sourcemap",
+    "build": "tsup src/index.ts --format esm --dts --sourcemap",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
