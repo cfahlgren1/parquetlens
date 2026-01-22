@@ -18,8 +18,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          registry-url: "https://registry.npmjs.org"
+          node-version: 24
+
+      - run: npm config set registry https://registry.npmjs.org/
 
       - run: pnpm install --frozen-lockfile
 
@@ -27,5 +28,5 @@ jobs:
 
       - run: pnpm -C apps/parquetlens build
 
-      - run: npm publish --provenance --access public
+      - run: npm publish --access public
         working-directory: apps/parquetlens
