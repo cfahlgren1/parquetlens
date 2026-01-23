@@ -40,7 +40,7 @@ importers:
         version: 19.2.3
     optionalDependencies:
       '@parquetlens/sql':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/sql
     devDependencies:
       '@parquetlens/parquet-reader':
@@ -67,12 +67,13 @@ importers:
       '@duckdb/duckdb-wasm':
         specifier: ^1.32.0
         version: 1.32.0
-      '@parquetlens/parquet-reader':
-        specifier: workspace:*
-        version: link:../parquet-reader
       apache-arrow:
         specifier: ^17.0.0
         version: 17.0.0
+    devDependencies:
+      '@parquetlens/parquet-reader':
+        specifier: workspace:*
+        version: link:../parquet-reader
 
 packages:
 
