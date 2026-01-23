@@ -22,14 +22,11 @@ npx parquetlens data.parquet
 parquetlens <file|url|-> [options]
 ```
 
-**Remote URL requirements:**
-
-- HTTP/S (including `hf://`) uses range reads via `curl`, so `curl` must be available on your PATH.
-
 **Options:**
 
 - `--limit <n>` - Number of rows to show (default: 20)
 - `--columns <a,b,c>` - Comma-separated column list
+- `--sql <query>` - Run SQL query (uses `data` as table name, requires @parquetlens/sql)
 - `--schema` - Print schema only
 - `--no-schema` - Skip schema output
 - `--json` - Output rows as JSON lines
@@ -56,6 +53,9 @@ parquetlens - < data.parquet
 
 # Plain output (no TUI)
 parquetlens data.parquet --plain --limit 100
+
+# SQL query (requires optional @parquetlens/sql)
+parquetlens data.parquet --sql "SELECT city, COUNT(*) FROM data GROUP BY city"
 ```
 
 ## TUI Controls
@@ -75,10 +75,10 @@ parquetlens data.parquet --plain --limit 100
 
 ## Features
 
-- **Fast**: Uses duckdb-wasm with HTTP range requests
+- **Fast**: Uses a lightweight Parquet reader with HTTP range requests
 - **Interactive TUI**: Full-screen terminal UI with mouse support
 - **URL Support**: Read parquet files from URLs (including `hf://`)
-- **Column Types**: Shows Arrow schema types in headers
+- **Column Types**: Shows Parquet schema types in headers
 - **Cell Detail**: Click any cell to see full content
 - **Streaming**: Reads only the rows you need
 

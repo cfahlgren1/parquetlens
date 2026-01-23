@@ -26,7 +26,12 @@ jobs:
 
       - run: pnpm -C packages/parquet-reader build
 
+      - run: pnpm -C packages/sql build
+
       - run: pnpm -C apps/parquetlens build
+
+      - run: npm publish --access public
+        working-directory: packages/sql
 
       - run: npm publish --access public
         working-directory: apps/parquetlens

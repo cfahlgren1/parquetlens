@@ -1,0 +1,35 @@
+{
+  "name": "@parquetlens/sql",
+  "version": "0.1.0",
+  "description": "SQL query support for parquetlens using DuckDB",
+  "type": "module",
+  "license": "MIT",
+  "author": "Caleb Fahlgren",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cfahlgren1/parquetlens",
+    "directory": "packages/sql"
+  },
+  "keywords": [
+    "parquet",
+    "sql",
+    "duckdb",
+    "query"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@duckdb/duckdb-wasm": "^1.32.0",
+    "apache-arrow": "^17.0.0"
+  },
+  "devDependencies": {
+    "@parquetlens/parquet-reader": "workspace:*"
+  }
+}

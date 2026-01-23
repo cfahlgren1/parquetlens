@@ -4,9 +4,10 @@ import { spawnSync } from "node:child_process";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 import type {
-  ParquetSource,
   ParquetFileMetadata,
   ParquetReadOptions,
+  ParquetRow,
+  ParquetSource,
 } from "@parquetlens/parquet-reader";
 import { openParquetSource } from "@parquetlens/parquet-reader";
 
@@ -23,7 +24,7 @@ type ColumnInfo = {
 
 type GridState = {
   columns: ColumnInfo[];
-  rows: string[][];
+  rows: ParquetRow[];
 };
 
 type GridLines = {
@@ -84,22 +85,21 @@ export async function runTui(input: string, options: TuiOptions): Promise<void> 
 
   // Load initial data before opening TUI
   const initialLimit = options.maxRows ? Math.min(50, options.maxRows) : 50;
-  const table = await source.readTable({
+  const readOptions: ParquetReadOptions = {
     batchSize: options.batchSize ?? 1024,
     columns: options.columns.length > 0 ? options.columns : undefined,
     limit: initialLimit,
     offset: 0,
-  });
+  };
 
-  const initialColumns: ColumnInfo[] = table.schema.fields.map((field) => ({
-    name: field.name,
-    type: formatArrowType(field.type),
-  }));
-  const initialRows = tableToGridRows(table, initialColumns.map((c) => c.name));
+  const [initialRows, metadata] = await Promise.all([
+    source.readTable(readOptions),
+    source.readMetadata().catch(() => null),
+  ]);
+
+  const initialColumns = buildColumnInfo(metadata, initialRows, options.columns);
   const initialGrid: GridState = { columns: initialColumns, rows: initialRows };
-
-  // Load metadata
-  const metadata = await source.readMetadata().catch(() => null);
+  const initialKnownTotal = resolveInitialTotal(metadata, initialRows, initialLimit);
 
   const { root, handleExit } = await createTuiRenderer();
   root.render(
@@ -110,18 +110,18 @@ export async function runTui(input: string, options: TuiOptions): Promise<void> 
       onExit={handleExit}
       initialGrid={initialGrid}
       initialMetadata={metadata}
-      initialKnownTotal={initialRows.length < initialLimit ? initialRows.length : null}
-    />
+      initialKnownTotal={initialKnownTotal}
+    />,
   );
 }
 
-export async function runTuiWithTable(
-  table: import("apache-arrow").Table,
+export async function runTuiWithRows(
+  rows: ParquetRow[],
   title: string,
   options: TuiOptions,
 ): Promise<void> {
   const { root, handleExit } = await createTuiRenderer();
-  root.render(<StaticApp table={table} title={title} options={options} onExit={handleExit} />);
+  root.render(<StaticApp rows={rows} title={title} options={options} onExit={handleExit} />);
 }
 
 type TableViewerProps = {
@@ -395,12 +395,21 @@ type AppProps = {
   initialKnownTotal?: number | null;
 };
 
-function App({ source, filePath, options, onExit, initialGrid, initialMetadata, initialKnownTotal }: AppProps) {
+function App({
+  source,
+  filePath,
+  options,
+  onExit,
+  initialGrid,
+  initialMetadata,
+  initialKnownTotal,
+}: AppProps) {
   const { height } = useTerminalDimensions();
   const pageSize = Math.max(1, height - RESERVED_LINES);
 
   const [offset, setOffset] = useState(0);
-  const [grid, setGrid] = useState<GridState>(initialGrid ?? { columns: [], rows: [] });
+  const [rows, setRows] = useState<ParquetRow[]>(initialGrid?.rows ?? []);
+  const [columns, setColumns] = useState<ColumnInfo[]>(initialGrid?.columns ?? []);
   const [loading, setLoading] = useState(!initialGrid);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -416,6 +425,7 @@ function App({ source, filePath, options, onExit, initialGrid, initialMetadata, 
       : Math.max(0, effectiveTotal - pageSize);
 
   const columnsToRead = options.columns;
+  const grid = useMemo(() => ({ columns, rows }), [columns, rows]);
 
   // Cleanup source on unmount
   useEffect(() => {
@@ -447,20 +457,14 @@ function App({ source, filePath, options, onExit, initialGrid, initialMetadata, 
           limit,
           offset,
         };
-        const table = await source.readTable(readOptions);
-        const columns: ColumnInfo[] = table.schema.fields.map((field) => ({
-          name: field.name,
-          type: formatArrowType(field.type),
-        }));
-        const rows = tableToGridRows(
-          table,
-          columns.map((c) => c.name),
-        );
+        const rowsPage = await source.readTable(readOptions);
+        const nextColumns = buildColumnInfo(metadata, rowsPage, columnsToRead);
 
         if (!canceled) {
-          setGrid({ columns, rows });
-          if (rows.length < limit) {
-            setKnownTotalRows(offset + rows.length);
+          setRows(rowsPage);
+          setColumns(nextColumns);
+          if (rowsPage.length < limit) {
+            setKnownTotalRows(offset + rowsPage.length);
           }
         }
       } catch (caught) {
@@ -479,7 +483,7 @@ function App({ source, filePath, options, onExit, initialGrid, initialMetadata, 
     return () => {
       canceled = true;
     };
-  }, [columnsToRead, offset, options.batchSize, options.maxRows, pageSize, source]);
+  }, [columnsToRead, metadata, offset, options.batchSize, options.maxRows, pageSize, source]);
 
   // Load metadata (skip if preloaded)
   useEffect(() => {
@@ -498,6 +502,11 @@ function App({ source, filePath, options, onExit, initialGrid, initialMetadata, 
       canceled = true;
     };
   }, [initialMetadata, source]);
+
+  useEffect(() => {
+    if (!metadata) return;
+    setColumns(buildColumnInfo(metadata, rows, columnsToRead));
+  }, [columnsToRead, metadata, rows]);
 
   // Cleanup notice timer
   useEffect(() => {
@@ -534,48 +543,32 @@ function App({ source, filePath, options, onExit, initialGrid, initialMetadata, 
 }
 
 type StaticAppProps = {
-  table: import("apache-arrow").Table;
+  rows: ParquetRow[];
   title: string;
   options: TuiOptions;
   onExit: () => void;
 };
 
-function StaticApp({ table, title, options, onExit }: StaticAppProps) {
+function StaticApp({ rows, title, options, onExit }: StaticAppProps) {
   const { height } = useTerminalDimensions();
   const pageSize = Math.max(1, height - RESERVED_LINES);
 
   const [offset, setOffset] = useState(0);
 
-  const columns: ColumnInfo[] = useMemo(
-    () =>
-      table.schema.fields.map((field) => ({
-        name: field.name,
-        type: formatArrowType(field.type),
-      })),
-    [table],
+  const columns = useMemo(
+    () => buildColumnInfo(null, rows, options.columns),
+    [rows, options.columns],
   );
 
-  const allRows = useMemo(
-    () =>
-      tableToGridRows(
-        table,
-        columns.map((c) => c.name),
-      ),
-    [table, columns],
-  );
-
-  const totalRows = allRows.length;
+  const totalRows = rows.length;
   const maxOffset = Math.max(0, totalRows - pageSize);
 
   const visibleRows = useMemo(
-    () => allRows.slice(offset, offset + pageSize),
-    [allRows, offset, pageSize],
+    () => rows.slice(offset, offset + pageSize),
+    [rows, offset, pageSize],
   );
 
-  const grid: GridState = useMemo(
-    () => ({ columns, rows: visibleRows }),
-    [columns, visibleRows],
-  );
+  const grid: GridState = useMemo(() => ({ columns, rows: visibleRows }), [columns, visibleRows]);
 
   return (
     <TableViewer
@@ -706,10 +699,10 @@ function buildGridLines(grid: GridState, offset: number, targetWidth: number): G
   const rows = grid.rows;
 
   const rowNumberWidth = Math.max(String(offset + rows.length).length, 3);
-  const columnWidths = columns.map((col, index) => {
+  const columnWidths = columns.map((col) => {
     const longestCell = rows.reduce(
       (max, row) => {
-        const value = row[index] ?? "";
+        const value = formatCellValue(row[col.name]);
         return Math.max(max, value.length);
       },
       Math.max(col.name.length, col.type.length),
@@ -731,7 +724,7 @@ function buildGridLines(grid: GridState, offset: number, targetWidth: number): G
   const separatorLine = buildSeparator(headerWidths);
   const rowLines = rows.map((row, index) => {
     const rowIndex = String(offset + index + 1);
-    const values = [rowIndex, ...row];
+    const values = [rowIndex, ...columns.map((col) => formatCellValue(row[col.name]))];
     return buildLine(values, headerWidths);
   });
 
@@ -890,7 +883,8 @@ function buildDetail(
   const col = grid.columns[colIndex];
   const columnName = col?.name ?? "(unknown)";
   const columnType = col?.type ?? "";
-  const value = grid.rows[rowIndex]?.[colIndex] ?? "";
+  const row = grid.rows[rowIndex];
+  const value = row ? formatCellDetail(row[columnName]) : "";
   const absoluteRow = offset + rowIndex + 1;
 
   return `row ${absoluteRow} • ${columnName}\n${columnType}\n\n${value}`;
@@ -919,22 +913,63 @@ function getMetadataFlags(metadata: ParquetFileMetadata | null): {
   };
 }
 
-function tableToGridRows(table: import("apache-arrow").Table, columns: string[]): string[][] {
-  const rows: string[][] = [];
-
-  for (const batch of table.batches) {
-    const vectors = columns.map((_, index) => batch.getChildAt(index));
-
-    for (let rowIndex = 0; rowIndex < batch.numRows; rowIndex += 1) {
-      const row = vectors.map((vector) => formatCell(vector?.get(rowIndex)));
-      rows.push(row);
-    }
+function buildColumnInfo(
+  metadata: ParquetFileMetadata | null,
+  rows: ParquetRow[],
+  requestedColumns: string[],
+): ColumnInfo[] {
+  if (metadata?.columns?.length) {
+    const names =
+      requestedColumns.length > 0 ? requestedColumns : metadata.columns.map((col) => col.name);
+    return names.map((name) => {
+      const col = metadata.columns.find((meta) => meta.name === name);
+      const fallback = rows.find((row) => row[name] !== null && row[name] !== undefined)?.[name];
+      return { name, type: col?.type ?? inferColumnType(fallback) };
+    });
   }
 
-  return rows;
+  const names =
+    requestedColumns.length > 0
+      ? requestedColumns
+      : rows.length > 0
+        ? Object.keys(rows[0] ?? {})
+        : [];
+
+  return names.map((name) => {
+    const value = rows.find((row) => row[name] !== null && row[name] !== undefined)?.[name];
+    return { name, type: inferColumnType(value) };
+  });
 }
 
-function formatCell(value: unknown): string {
+function inferColumnType(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "unknown";
+  }
+
+  if (typeof value === "bigint") {
+    return "bigint";
+  }
+
+  if (value instanceof Date) {
+    return "timestamp";
+  }
+
+  if (value instanceof Uint8Array) {
+    return "binary";
+  }
+
+  if (Array.isArray(value)) {
+    return "array";
+  }
+
+  if (typeof value === "object") {
+    return "object";
+  }
+
+  return typeof value;
+}
+
+function formatCellDetail(value: unknown): string {
   if (value === null || value === undefined) {
     return "";
   }
@@ -962,8 +997,37 @@ function formatCell(value: unknown): string {
   return String(value);
 }
 
-function formatArrowType(type: import("apache-arrow").DataType): string {
-  return type.toString();
+function formatCellValue(value: unknown): string {
+  return formatCellDetail(value);
+}
+
+function resolveInitialTotal(
+  metadata: ParquetFileMetadata | null,
+  rows: ParquetRow[],
+  initialLimit: number,
+): number | null {
+  if (metadata?.rowCount !== undefined) {
+    const rowCount = normalizeRowCount(metadata.rowCount);
+    if (rowCount !== undefined) {
+      return rowCount;
+    }
+  }
+
+  return rows.length < initialLimit ? rows.length : null;
+}
+
+function normalizeRowCount(value: number | bigint | undefined): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "bigint") {
+    if (value <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      return Number(value);
+    }
+  }
+
+  return undefined;
 }
 
 function copyToClipboard(value: string): boolean {
