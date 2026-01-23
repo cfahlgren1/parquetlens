@@ -241,30 +241,67 @@ function resolveColumns(table: Table, requested: string[]): { names: string[]; i
   };
 }
 
-const MAX_CELL_WIDTH = 50;
+type ColumnDef = { name: string; type: string };
 
-function truncateCell(value: string): string {
-  const oneLine = value.replace(/\n/g, " ");
-  if (oneLine.length <= MAX_CELL_WIDTH) {
-    return oneLine;
+function getColumnDefs(table: Table, requestedColumns: string[]): ColumnDef[] {
+  const fields = table.schema.fields;
+  if (requestedColumns.length === 0) {
+    return fields.map((f) => ({ name: f.name, type: String(f.type) }));
   }
-  return oneLine.slice(0, MAX_CELL_WIDTH - 3) + "...";
+  const fieldMap = new Map(fields.map((f) => [f.name, f]));
+  return requestedColumns.map((name) => {
+    const field = fieldMap.get(name);
+    return { name, type: field ? String(field.type) : "unknown" };
+  });
 }
 
-function printTable(rows: Record<string, unknown>[]): void {
+function truncateCell(value: string, maxWidth: number): string {
+  const oneLine = value.replace(/\n/g, " ");
+  if (oneLine.length <= maxWidth) {
+    return oneLine;
+  }
+  return oneLine.slice(0, maxWidth - 3) + "...";
+}
+
+function printTable(rows: Record<string, unknown>[], columns: ColumnDef[]): void {
   if (rows.length === 0) {
     process.stdout.write("(no rows)\n");
     return;
   }
 
-  const columns = Object.keys(rows[0]);
+  const termWidth = process.stdout.columns || 120;
+  const numCols = columns.length;
+  // Account for borders: │ col │ col │ = 1 + (3 * numCols)
+  const borderOverhead = 1 + 3 * numCols;
+  const availableWidth = Math.max(termWidth - borderOverhead, numCols * 6);
+
+  // Calculate ideal width for each column (header + max content, capped at 60)
+  const idealWidths = columns.map((c) => {
+    const headerLen = `${c.name}: ${c.type}`.length;
+    const maxContent = rows.reduce((max, row) => {
+      const val = String(row[c.name] ?? "").replace(/\n/g, " ");
+      return Math.max(max, val.length);
+    }, 0);
+    return Math.min(60, Math.max(headerLen, maxContent));
+  });
+
+  const totalIdeal = idealWidths.reduce((sum, w) => sum + w, 0);
+
+  // Scale columns to fit available width
+  const scale = Math.min(1, availableWidth / totalIdeal);
+  const colWidths = idealWidths.map((ideal) => Math.max(6, Math.floor(ideal * scale)));
+
+  const headers = columns.map((c, i) => truncateCell(`${c.name}: ${c.type}`, colWidths[i]));
+
   const table = new CliTable3({
-    head: columns,
+    head: headers,
     style: { head: [], border: [] },
+    colWidths: colWidths.map((w) => w + 2), // +2 for padding
+    wordWrap: false,
   });
 
   for (const row of rows) {
-    table.push(columns.map((col) => truncateCell(String(row[col] ?? ""))));
+    table.push(columns.map((c, i) => truncateCell(String(row[c.name] ?? ""), colWidths[i])));
   }
 
   process.stdout.write(table.toString() + "\n");
@@ -400,6 +437,7 @@ async function main(): Promise<void> {
       process.stderr.write("parquetlens: bun not found, falling back to plain output\n");
     }
 
+    const sqlColumns = getColumnDefs(table, []);
     const rows = previewRows(table, options.limit, []);
 
     if (options.json) {
@@ -407,7 +445,7 @@ async function main(): Promise<void> {
         process.stdout.write(`${JSON.stringify(row)}\n`);
       }
     } else {
-      printTable(rows);
+      printTable(rows, sqlColumns);
     }
     return;
   }
@@ -460,6 +498,7 @@ async function main(): Promise<void> {
     return;
   }
 
+  const columnDefs = getColumnDefs(table, options.columns);
   const rows = previewRows(table, options.limit, options.columns);
 
   if (options.json) {
@@ -469,7 +508,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  printTable(rows);
+  printTable(rows, columnDefs);
 }
 
 function resolveTuiMode(mode: TuiMode, options: Options): boolean {
