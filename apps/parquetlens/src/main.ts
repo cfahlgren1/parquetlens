@@ -5,17 +5,24 @@ import {
   readParquetTableFromStdin,
   readParquetTableFromUrl,
   resolveParquetUrl,
+  runSqlOnParquet,
+  runSqlOnParquetFromStdin,
 } from "@parquetlens/parquet-reader";
 import type { Table } from "apache-arrow";
+import CliTable3 from "cli-table3";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as nodeFileURLToPath } from "node:url";
 
-// Polyfill __filename for ESM (tsx dev mode)
-const __filename =
-  typeof globalThis.__filename !== "undefined"
-    ? globalThis.__filename
-    : fileURLToPath(import.meta.url);
+// __filename is provided by tsup banner in production.
+// In dev mode (tsx/ESM), we derive it from import.meta.url.
+// Use a different name to avoid duplicate declaration with banner.
+const __parquetlens_filename =
+  typeof __filename !== "undefined"
+    ? __filename
+    : nodeFileURLToPath(import.meta.url);
+
+declare const __filename: string;
 
 type TuiMode = "auto" | "on" | "off";
 
@@ -26,6 +33,7 @@ type Options = {
   schemaOnly: boolean;
   showSchema: boolean;
   tuiMode: TuiMode;
+  sql?: string;
 };
 
 type ParsedArgs = {
@@ -75,6 +83,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 
     if (arg === "--plain" || arg === "--no-tui") {
       options.tuiMode = "off";
+      options.showSchema = false;
       continue;
     }
 
@@ -121,6 +130,15 @@ function parseArgs(argv: string[]): ParsedArgs {
       continue;
     }
 
+    const sqlValue = readOptionValue(arg, "--sql", argv[i + 1]);
+    if (sqlValue) {
+      options.sql = sqlValue.value;
+      if (sqlValue.usedNext) {
+        i += 1;
+      }
+      continue;
+    }
+
     if (arg === "-") {
       if (input) {
         return { options, limitSpecified, help: false, error: "unexpected extra argument: -" };
@@ -145,7 +163,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 
 function readOptionValue(
   arg: string,
-  name: "--limit" | "--columns",
+  name: "--limit" | "--columns" | "--sql",
   next?: string,
 ): { value: string; usedNext: boolean } | null {
   if (arg === name) {
@@ -168,6 +186,7 @@ function printUsage(): void {
 options:
   --limit, --limit=<n>       number of rows to show (default: ${DEFAULT_LIMIT})
   --columns, --columns=<c>   comma-separated column list
+  --sql, --sql=<query>       run SQL query (use 'data' as table name)
   --schema                   print schema only
   --no-schema                skip schema output
   --json                     output rows as json lines
@@ -178,6 +197,7 @@ options:
 examples:
   parquetlens data.parquet --limit 25
   parquetlens data.parquet --columns=city,state
+  parquetlens data.parquet --sql "SELECT city, COUNT(*) FROM data GROUP BY city"
   parquetlens hf://datasets/cfahlgren1/hub-stats/daily_papers.parquet
   parquetlens https://huggingface.co/datasets/cfahlgren1/hub-stats/resolve/main/daily_papers.parquet
   parquetlens data.parquet --plain
@@ -219,6 +239,72 @@ function resolveColumns(table: Table, requested: string[]): { names: string[]; i
     names,
     indices: names.map((name) => nameToIndex.get(name) ?? -1),
   };
+}
+
+type ColumnDef = { name: string; type: string };
+
+function getColumnDefs(table: Table, requestedColumns: string[]): ColumnDef[] {
+  const fields = table.schema.fields;
+  if (requestedColumns.length === 0) {
+    return fields.map((f) => ({ name: f.name, type: String(f.type) }));
+  }
+  const fieldMap = new Map(fields.map((f) => [f.name, f]));
+  return requestedColumns.map((name) => {
+    const field = fieldMap.get(name);
+    return { name, type: field ? String(field.type) : "unknown" };
+  });
+}
+
+function truncateCell(value: string, maxWidth: number): string {
+  const oneLine = value.replace(/\n/g, " ");
+  if (oneLine.length <= maxWidth) {
+    return oneLine;
+  }
+  return oneLine.slice(0, maxWidth - 3) + "...";
+}
+
+function printTable(rows: Record<string, unknown>[], columns: ColumnDef[]): void {
+  if (rows.length === 0) {
+    process.stdout.write("(no rows)\n");
+    return;
+  }
+
+  const termWidth = process.stdout.columns || 120;
+  const numCols = columns.length;
+  // Account for borders: │ col │ col │ = 1 + (3 * numCols)
+  const borderOverhead = 1 + 3 * numCols;
+  const availableWidth = Math.max(termWidth - borderOverhead, numCols * 6);
+
+  // Calculate ideal width for each column (header + max content, capped at 60)
+  const idealWidths = columns.map((c) => {
+    const headerLen = `${c.name}: ${c.type}`.length;
+    const maxContent = rows.reduce((max, row) => {
+      const val = String(row[c.name] ?? "").replace(/\n/g, " ");
+      return Math.max(max, val.length);
+    }, 0);
+    return Math.min(60, Math.max(headerLen, maxContent));
+  });
+
+  const totalIdeal = idealWidths.reduce((sum, w) => sum + w, 0);
+
+  // Scale columns to fit available width
+  const scale = Math.min(1, availableWidth / totalIdeal);
+  const colWidths = idealWidths.map((ideal) => Math.max(6, Math.floor(ideal * scale)));
+
+  const headers = columns.map((c, i) => truncateCell(`${c.name}: ${c.type}`, colWidths[i]));
+
+  const table = new CliTable3({
+    head: headers,
+    style: { head: [], border: [] },
+    colWidths: colWidths.map((w) => w + 2), // +2 for padding
+    wordWrap: false,
+  });
+
+  for (const row of rows) {
+    table.push(columns.map((c, i) => truncateCell(String(row[c.name] ?? ""), colWidths[i])));
+  }
+
+  process.stdout.write(table.toString() + "\n");
 }
 
 function formatCell(value: unknown): unknown {
@@ -316,6 +402,54 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Handle SQL mode
+  if (options.sql) {
+    const stdinFallback = process.stdin.isTTY ? undefined : "-";
+    const source = input ?? stdinFallback;
+
+    if (!source) {
+      process.stderr.write("parquetlens: missing input file for SQL query\n");
+      process.exitCode = 1;
+      return;
+    }
+
+    const table =
+      source === "-"
+        ? await runSqlOnParquetFromStdin(options.sql)
+        : await runSqlOnParquet(source, options.sql);
+
+    // Use TUI for SQL results if not in JSON/plain mode
+    const wantsSqlTui =
+      !options.json && options.tuiMode !== "off" && source !== "-" && process.stdin.isTTY && process.stdout.isTTY;
+
+    if (wantsSqlTui) {
+      if (isBunRuntime()) {
+        const { runTuiWithTable } = await importTuiModule();
+        const title = `SQL: ${options.sql.slice(0, 50)}${options.sql.length > 50 ? "..." : ""}`;
+        await runTuiWithTable(table, title, { columns: [], maxRows: options.limit });
+        return;
+      }
+      // Spawn bun to re-run the query and display in TUI
+      const spawned = spawnBun(process.argv.slice(1));
+      if (spawned) {
+        return;
+      }
+      process.stderr.write("parquetlens: bun not found, falling back to plain output\n");
+    }
+
+    const sqlColumns = getColumnDefs(table, []);
+    const rows = previewRows(table, options.limit, []);
+
+    if (options.json) {
+      for (const row of rows) {
+        process.stdout.write(`${JSON.stringify(row)}\n`);
+      }
+    } else {
+      printTable(rows, sqlColumns);
+    }
+    return;
+  }
+
   const wantsTui = resolveTuiMode(options.tuiMode, options);
   if (wantsTui) {
     if (!input || input === "-") {
@@ -364,6 +498,7 @@ async function main(): Promise<void> {
     return;
   }
 
+  const columnDefs = getColumnDefs(table, options.columns);
   const rows = previewRows(table, options.limit, options.columns);
 
   if (options.json) {
@@ -373,7 +508,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  console.table(rows);
+  printTable(rows, columnDefs);
 }
 
 function resolveTuiMode(mode: TuiMode, options: Options): boolean {
@@ -401,7 +536,7 @@ function spawnBun(argv: string[]): boolean {
     return false;
   }
 
-  const result = spawnSync("bun", [__filename, ...argv.slice(1)], {
+  const result = spawnSync("bun", [__parquetlens_filename, ...argv.slice(1)], {
     stdio: "inherit",
     env: { ...process.env, PARQUETLENS_BUN: "1" },
   });
@@ -411,7 +546,7 @@ function spawnBun(argv: string[]): boolean {
 }
 
 async function importTuiModule(): Promise<typeof import("./tui.js")> {
-  const extension = path.extname(__filename);
+  const extension = path.extname(__parquetlens_filename);
   const modulePath = extension === ".js" ? "./tui.js" : "./tui.tsx";
   return import(modulePath);
 }

@@ -47,6 +47,7 @@ export type ParquetFileMetadata = {
 export type ParquetSource = {
   readTable: (options?: ParquetReadOptions) => Promise<Table>;
   readMetadata: () => Promise<ParquetFileMetadata>;
+  runSql: (query: string) => Promise<Table>;
   close: () => Promise<void>;
 };
 
@@ -523,12 +524,43 @@ export async function readParquetTableFromStdin(
   }
 }
 
+export async function runSqlOnParquet(input: string, query: string): Promise<Table> {
+  const source = await openParquetSource(input);
+
+  try {
+    return await source.runSql(query);
+  } finally {
+    await source.close();
+  }
+}
+
+export async function runSqlOnParquetFromStdin(
+  query: string,
+  filenameHint = "stdin.parquet",
+): Promise<Table> {
+  const temp = await bufferStdinToTempFile(filenameHint);
+
+  try {
+    return await runSqlOnParquet(temp.path, query);
+  } finally {
+    await temp.cleanup();
+  }
+}
+
 function createParquetSource(
   db: DuckDBBindings,
   conn: DuckDBConnection,
   fileName: string,
 ): ParquetSource {
   let metadataPromise: Promise<ParquetFileMetadata> | null = null;
+  let viewCreated = false;
+
+  const ensureDataView = () => {
+    if (!viewCreated) {
+      conn.query(`CREATE OR REPLACE VIEW data AS SELECT * FROM read_parquet(${quoteLiteral(fileName)})`);
+      viewCreated = true;
+    }
+  };
 
   return {
     readTable: async (options?: ParquetReadOptions) => {
@@ -540,6 +572,10 @@ function createParquetSource(
         metadataPromise = readParquetMetadata(conn, fileName);
       }
       return metadataPromise;
+    },
+    runSql: async (query: string) => {
+      ensureDataView();
+      return conn.query(query);
     },
     close: async () => {
       conn.close();

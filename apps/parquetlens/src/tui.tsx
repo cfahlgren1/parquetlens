@@ -62,8 +62,7 @@ const THEME = {
   stripe: "#252733",
 };
 
-export async function runTui(input: string, options: TuiOptions): Promise<void> {
-  const source = await openParquetSource(input);
+async function createTuiRenderer() {
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
     useAlternateScreen: true,
@@ -73,128 +72,100 @@ export async function runTui(input: string, options: TuiOptions): Promise<void> 
   });
   renderer.setTerminalTitle("parquetlens");
   const root = createRoot(renderer);
-
   const handleExit = () => {
     root.unmount();
     renderer.destroy();
   };
-
-  root.render(<App source={source} filePath={input} options={options} onExit={handleExit} />);
+  return { root, handleExit };
 }
 
-type AppProps = {
-  source: ParquetSource;
-  filePath: string;
-  options: TuiOptions;
+export async function runTui(input: string, options: TuiOptions): Promise<void> {
+  const source = await openParquetSource(input);
+
+  // Load initial data before opening TUI
+  const initialLimit = options.maxRows ? Math.min(50, options.maxRows) : 50;
+  const table = await source.readTable({
+    batchSize: options.batchSize ?? 1024,
+    columns: options.columns.length > 0 ? options.columns : undefined,
+    limit: initialLimit,
+    offset: 0,
+  });
+
+  const initialColumns: ColumnInfo[] = table.schema.fields.map((field) => ({
+    name: field.name,
+    type: formatArrowType(field.type),
+  }));
+  const initialRows = tableToGridRows(table, initialColumns.map((c) => c.name));
+  const initialGrid: GridState = { columns: initialColumns, rows: initialRows };
+
+  // Load metadata
+  const metadata = await source.readMetadata().catch(() => null);
+
+  const { root, handleExit } = await createTuiRenderer();
+  root.render(
+    <App
+      source={source}
+      filePath={input}
+      options={options}
+      onExit={handleExit}
+      initialGrid={initialGrid}
+      initialMetadata={metadata}
+      initialKnownTotal={initialRows.length < initialLimit ? initialRows.length : null}
+    />
+  );
+}
+
+export async function runTuiWithTable(
+  table: import("apache-arrow").Table,
+  title: string,
+  options: TuiOptions,
+): Promise<void> {
+  const { root, handleExit } = await createTuiRenderer();
+  root.render(<StaticApp table={table} title={title} options={options} onExit={handleExit} />);
+}
+
+type TableViewerProps = {
+  grid: GridState;
+  title: string;
+  offset: number;
+  setOffset: React.Dispatch<React.SetStateAction<number>>;
+  maxOffset: number | undefined;
+  totalRows: number | undefined;
+  pageSize: number;
+  loading?: boolean;
+  error?: string | null;
+  notice?: string | null;
+  metadata?: ParquetFileMetadata | null;
   onExit: () => void;
+  onCopyError?: () => void;
 };
 
-function App({ source, filePath, options, onExit }: AppProps) {
-  const { width, height } = useTerminalDimensions();
-  const pageSize = Math.max(1, height - RESERVED_LINES);
+function TableViewer({
+  grid,
+  title,
+  offset,
+  setOffset,
+  maxOffset,
+  totalRows,
+  pageSize,
+  loading = false,
+  error = null,
+  notice = null,
+  metadata = null,
+  onExit,
+  onCopyError,
+}: TableViewerProps) {
+  const { width } = useTerminalDimensions();
 
-  const [offset, setOffset] = useState(0);
   const [xOffset, setXOffset] = useState(0);
-  const [grid, setGrid] = useState<GridState>({ columns: [], rows: [] } as GridState);
   const [selection, setSelection] = useState<{ row: number; col: number } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(null);
-  const [knownTotalRows, setKnownTotalRows] = useState<number | null>(null);
-  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const effectiveTotal = options.maxRows ?? knownTotalRows;
-  const maxOffset =
-    effectiveTotal === undefined || effectiveTotal === null
-      ? undefined
-      : Math.max(0, effectiveTotal - pageSize);
   const sidebarWidth = sidebarOpen
     ? Math.min(width, Math.max(SIDEBAR_MIN_WIDTH, Math.floor(width * SIDEBAR_WIDTH_RATIO)))
     : 0;
   const tableWidth = Math.max(0, width - (sidebarOpen ? sidebarWidth + PANEL_GAP : 0));
   const tableContentWidth = Math.max(0, tableWidth - CONTENT_BORDER_WIDTH);
-
-  const columnsToRead = options.columns;
-
-  useEffect(() => {
-    return () => {
-      void source.close();
-    };
-  }, [source]);
-
-  useEffect(() => {
-    let canceled = false;
-
-    const loadWindow = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const limit = options.maxRows
-          ? Math.max(0, Math.min(pageSize, options.maxRows - offset))
-          : pageSize;
-        const readOptions: ParquetReadOptions = {
-          batchSize: options.batchSize ?? 1024,
-          columns: columnsToRead.length > 0 ? columnsToRead : undefined,
-          limit,
-          offset,
-        };
-        const table = await source.readTable(readOptions);
-        const columns: ColumnInfo[] = table.schema.fields.map((field) => ({
-          name: field.name,
-          type: formatArrowType(field.type),
-        }));
-        const rows = tableToRows(
-          table,
-          columns.map((c) => c.name),
-        );
-
-        if (!canceled) {
-          setGrid({ columns, rows });
-          // Detect end of file: if we got fewer rows than requested, we know the total
-          if (rows.length < limit) {
-            setKnownTotalRows(offset + rows.length);
-          }
-        }
-      } catch (caught) {
-        const message = caught instanceof Error ? caught.message : String(caught);
-        if (!canceled) {
-          setError(message);
-        }
-      } finally {
-        if (!canceled) {
-          setLoading(false);
-        }
-      }
-    };
-
-    loadWindow();
-
-    return () => {
-      canceled = true;
-    };
-  }, [columnsToRead, offset, options.batchSize, options.maxRows, pageSize, source]);
-
-  useEffect(() => {
-    let canceled = false;
-    source
-      .readMetadata()
-      .then((meta) => {
-        if (!canceled) {
-          setMetadata(meta);
-        }
-      })
-      .catch(() => {
-        if (!canceled) {
-          setMetadata(null);
-        }
-      });
-
-    return () => {
-      canceled = true;
-    };
-  }, [source]);
 
   const gridLines = useMemo(
     () => buildGridLines(grid, offset, tableContentWidth),
@@ -211,7 +182,6 @@ function App({ source, filePath, options, onExit }: AppProps) {
       setSelection(null);
       return;
     }
-
     setSelection((current) => {
       const nextRow = current ? Math.min(current.row, grid.rows.length - 1) : 0;
       const nextCol = current ? Math.min(current.col, grid.columns.length - 1) : 0;
@@ -224,24 +194,6 @@ function App({ source, filePath, options, onExit }: AppProps) {
       setSidebarOpen(true);
     }
   }, [error]);
-
-  useEffect(() => {
-    return () => {
-      if (noticeTimer.current) {
-        clearTimeout(noticeTimer.current);
-      }
-    };
-  }, []);
-
-  const showNotice = (message: string) => {
-    setNotice(message);
-    if (noticeTimer.current) {
-      clearTimeout(noticeTimer.current);
-    }
-    noticeTimer.current = setTimeout(() => {
-      setNotice(null);
-    }, 2000);
-  };
 
   useKeyboard((key) => {
     if ((key.ctrl && key.name === "c") || key.name === "escape" || key.name === "q") {
@@ -262,65 +214,48 @@ function App({ source, filePath, options, onExit }: AppProps) {
       setOffset((current) => clampOffset(current + 1));
       return;
     }
-
     if (key.name === "up" || key.name === "k") {
       setOffset((current) => clampOffset(current - 1));
       return;
     }
-
     if (key.name === "pagedown" || key.name === "space") {
       setOffset((current) => clampOffset(current + pageSize));
       return;
     }
-
     if (key.name === "pageup") {
       setOffset((current) => clampOffset(current - pageSize));
       return;
     }
-
     if (key.name === "home" || (key.name === "g" && !key.shift)) {
       setOffset(0);
       return;
     }
-
     if ((key.name === "end" || (key.name === "g" && key.shift)) && maxOffset !== undefined) {
       setOffset(maxOffset);
       return;
     }
-
-    if (key.name === "return" || key.name === "enter") {
+    if (key.name === "return" || key.name === "enter" || key.name === "s") {
       setSidebarOpen((current) => !current);
       return;
     }
-
     if (key.name === "x") {
       setSidebarOpen(false);
       return;
     }
-
-    if (key.name === "s") {
-      setSidebarOpen((current) => !current);
-      return;
-    }
-
     if (key.name === "e" && error) {
       setSidebarOpen(true);
       return;
     }
-
-    if (key.name === "y" && error) {
-      const copied = copyToClipboard(error);
-      showNotice(copied ? "copied error to clipboard" : "clipboard unavailable");
+    if (key.name === "y" && error && onCopyError) {
+      onCopyError();
       return;
     }
-
     if (key.name === "left" || key.name === "h") {
       setXOffset((current) =>
         clampScroll(findScrollStop(current, gridLines.scrollStops, -1), maxScrollX),
       );
       return;
     }
-
     if (key.name === "right" || key.name === "l") {
       setXOffset((current) =>
         clampScroll(findScrollStop(current, gridLines.scrollStops, 1), maxScrollX),
@@ -337,13 +272,13 @@ function App({ source, filePath, options, onExit }: AppProps) {
     <box flexDirection="column" width="100%" height="100%" backgroundColor={THEME.background}>
       <box backgroundColor={THEME.header} border borderColor={THEME.border}>
         {renderHeader({
-          filePath,
+          filePath: title,
           offset,
           rows: grid.rows.length,
           columns: grid.columns.length,
           loading,
           error,
-          maxRows: effectiveTotal ?? undefined,
+          maxRows: totalRows,
           optimized: metaFlags.optimized,
           createdBy: metaFlags.createdBy,
         })}
@@ -356,13 +291,9 @@ function App({ source, filePath, options, onExit }: AppProps) {
           flexGrow={1}
           width={sidebarOpen ? tableWidth : "100%"}
           onMouseScroll={(event) => {
-            if (!event.scroll) {
-              return;
-            }
-
+            if (!event.scroll) return;
             const delta = Math.max(1, event.scroll.delta);
             const step = delta * SCROLL_STEP;
-
             if (event.scroll.direction === "up") {
               setOffset((current) => Math.max(0, current - step));
             } else if (event.scroll.direction === "down") {
@@ -397,9 +328,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
                 bg={isSelected ? THEME.header : index % 2 === 0 ? THEME.background : THEME.stripe}
                 onMouseDown={(event) => {
                   const target = event.target;
-                  if (!target) {
-                    return;
-                  }
+                  if (!target) return;
                   const localX = Math.max(0, event.x - target.x);
                   const absoluteX = localX + xOffset;
                   const colIndex = findColumnIndex(absoluteX, gridLines.columnRanges);
@@ -442,9 +371,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
               wrapMode="none"
               truncate
               fg={THEME.accent}
-              onMouseDown={() => {
-                setSidebarOpen(false);
-              }}
+              onMouseDown={() => setSidebarOpen(false)}
             >
               [ close ]
             </text>
@@ -452,9 +379,215 @@ function App({ source, filePath, options, onExit }: AppProps) {
         ) : null}
       </box>
       <box backgroundColor={THEME.header} border borderColor={THEME.border}>
-        {renderFooter(Boolean(error), notice)}
+        {renderFooter(!!error, notice)}
       </box>
     </box>
+  );
+}
+
+type AppProps = {
+  source: ParquetSource;
+  filePath: string;
+  options: TuiOptions;
+  onExit: () => void;
+  initialGrid?: GridState;
+  initialMetadata?: ParquetFileMetadata | null;
+  initialKnownTotal?: number | null;
+};
+
+function App({ source, filePath, options, onExit, initialGrid, initialMetadata, initialKnownTotal }: AppProps) {
+  const { height } = useTerminalDimensions();
+  const pageSize = Math.max(1, height - RESERVED_LINES);
+
+  const [offset, setOffset] = useState(0);
+  const [grid, setGrid] = useState<GridState>(initialGrid ?? { columns: [], rows: [] });
+  const [loading, setLoading] = useState(!initialGrid);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(initialMetadata ?? null);
+  const [knownTotalRows, setKnownTotalRows] = useState<number | null>(initialKnownTotal ?? null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initialLoadDone = useRef(!!initialGrid);
+
+  const effectiveTotal = options.maxRows ?? knownTotalRows;
+  const maxOffset =
+    effectiveTotal === undefined || effectiveTotal === null
+      ? undefined
+      : Math.max(0, effectiveTotal - pageSize);
+
+  const columnsToRead = options.columns;
+
+  // Cleanup source on unmount
+  useEffect(() => {
+    return () => {
+      void source.close();
+    };
+  }, [source]);
+
+  // Load data when offset changes
+  useEffect(() => {
+    // Skip initial load if we have preloaded data
+    if (offset === 0 && initialLoadDone.current) {
+      initialLoadDone.current = false; // Allow subsequent loads at offset 0
+      return;
+    }
+
+    let canceled = false;
+
+    const loadWindow = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const limit = options.maxRows
+          ? Math.max(0, Math.min(pageSize, options.maxRows - offset))
+          : pageSize;
+        const readOptions: ParquetReadOptions = {
+          batchSize: options.batchSize ?? 1024,
+          columns: columnsToRead.length > 0 ? columnsToRead : undefined,
+          limit,
+          offset,
+        };
+        const table = await source.readTable(readOptions);
+        const columns: ColumnInfo[] = table.schema.fields.map((field) => ({
+          name: field.name,
+          type: formatArrowType(field.type),
+        }));
+        const rows = tableToGridRows(
+          table,
+          columns.map((c) => c.name),
+        );
+
+        if (!canceled) {
+          setGrid({ columns, rows });
+          if (rows.length < limit) {
+            setKnownTotalRows(offset + rows.length);
+          }
+        }
+      } catch (caught) {
+        const message = caught instanceof Error ? caught.message : String(caught);
+        if (!canceled) {
+          setError(message);
+        }
+      } finally {
+        if (!canceled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadWindow();
+    return () => {
+      canceled = true;
+    };
+  }, [columnsToRead, offset, options.batchSize, options.maxRows, pageSize, source]);
+
+  // Load metadata (skip if preloaded)
+  useEffect(() => {
+    if (initialMetadata !== undefined) return;
+
+    let canceled = false;
+    source
+      .readMetadata()
+      .then((meta) => {
+        if (!canceled) setMetadata(meta);
+      })
+      .catch(() => {
+        if (!canceled) setMetadata(null);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [initialMetadata, source]);
+
+  // Cleanup notice timer
+  useEffect(() => {
+    return () => {
+      if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    };
+  }, []);
+
+  const handleCopyError = () => {
+    if (!error) return;
+    const copied = copyToClipboard(error);
+    setNotice(copied ? "copied error to clipboard" : "clipboard unavailable");
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), 2000);
+  };
+
+  return (
+    <TableViewer
+      grid={grid}
+      title={filePath}
+      offset={offset}
+      setOffset={setOffset}
+      maxOffset={maxOffset}
+      totalRows={effectiveTotal ?? undefined}
+      pageSize={pageSize}
+      loading={loading}
+      error={error}
+      notice={notice}
+      metadata={metadata}
+      onExit={onExit}
+      onCopyError={handleCopyError}
+    />
+  );
+}
+
+type StaticAppProps = {
+  table: import("apache-arrow").Table;
+  title: string;
+  options: TuiOptions;
+  onExit: () => void;
+};
+
+function StaticApp({ table, title, options, onExit }: StaticAppProps) {
+  const { height } = useTerminalDimensions();
+  const pageSize = Math.max(1, height - RESERVED_LINES);
+
+  const [offset, setOffset] = useState(0);
+
+  const columns: ColumnInfo[] = useMemo(
+    () =>
+      table.schema.fields.map((field) => ({
+        name: field.name,
+        type: formatArrowType(field.type),
+      })),
+    [table],
+  );
+
+  const allRows = useMemo(
+    () =>
+      tableToGridRows(
+        table,
+        columns.map((c) => c.name),
+      ),
+    [table, columns],
+  );
+
+  const totalRows = allRows.length;
+  const maxOffset = Math.max(0, totalRows - pageSize);
+
+  const visibleRows = useMemo(
+    () => allRows.slice(offset, offset + pageSize),
+    [allRows, offset, pageSize],
+  );
+
+  const grid: GridState = useMemo(
+    () => ({ columns, rows: visibleRows }),
+    [columns, visibleRows],
+  );
+
+  return (
+    <TableViewer
+      grid={grid}
+      title={title}
+      offset={offset}
+      setOffset={setOffset}
+      maxOffset={maxOffset}
+      totalRows={totalRows}
+      pageSize={pageSize}
+      onExit={onExit}
+    />
   );
 }
 
@@ -786,7 +919,7 @@ function getMetadataFlags(metadata: ParquetFileMetadata | null): {
   };
 }
 
-function tableToRows(table: import("apache-arrow").Table, columns: string[]): string[][] {
+function tableToGridRows(table: import("apache-arrow").Table, columns: string[]): string[][] {
   const rows: string[][] = [];
 
   for (const batch of table.batches) {

@@ -27,6 +27,7 @@ requires Node.js 20+
 - **streaming** - handles large files efficiently with lazy loading
 - **remote files** - load parquet files directly from HTTP URLs
 - **hugging face integration** - use `hf://` URLs to load datasets directly
+- **SQL queries** - run SQL queries directly on parquet files
 - **schema inspection** - view column types and metadata
 - **detail panel** - expand cells to view and copy full content
 
@@ -36,15 +37,16 @@ requires Node.js 20+
 parquetlens <file|url|-> [options]
 ```
 
-| Option                 | Description                         |
-| ---------------------- | ----------------------------------- |
-| `--limit <n>`          | number of rows to show (default 20) |
-| `--columns <a,b,c>`    | comma-separated column list         |
-| `--schema`             | print schema only                   |
-| `--no-schema`          | skip schema output                  |
-| `--json`               | output rows as json lines           |
-| `--tui`                | open interactive viewer (default)   |
-| `--plain` / `--no-tui` | disable interactive viewer          |
+| Option                 | Description                              |
+| ---------------------- | ---------------------------------------- |
+| `--limit <n>`          | number of rows to show (default 20)      |
+| `--columns <a,b,c>`    | comma-separated column list              |
+| `--sql <query>`        | run SQL query (use `data` as table name) |
+| `--schema`             | print schema only                        |
+| `--no-schema`          | skip schema output                       |
+| `--json`               | output rows as json lines                |
+| `--tui`                | open interactive viewer (default)        |
+| `--plain` / `--no-tui` | disable interactive viewer               |
 
 ## examples
 
@@ -66,6 +68,9 @@ parquetlens https://example.com/data.parquet
 
 # hugging face dataset
 parquetlens hf://datasets/username/dataset/data/train.parquet
+
+# run SQL query
+parquetlens data.parquet --sql "SELECT city, COUNT(*) FROM data GROUP BY city"
 
 # read from stdin (useful for piping from other tools)
 cat data.parquet | parquetlens -
