@@ -26,24 +26,22 @@ importers:
 
   apps/parquetlens:
     dependencies:
-      '@duckdb/duckdb-wasm':
-        specifier: ^1.32.0
-        version: 1.32.0
       '@opentui/core':
         specifier: ^0.1.74
         version: 0.1.74(stage-js@1.0.0-alpha.17)(typescript@5.9.3)(web-tree-sitter@0.25.10)
       '@opentui/react':
         specifier: ^0.1.74
         version: 0.1.74(react-devtools-core@7.0.1)(react@19.2.3)(stage-js@1.0.0-alpha.17)(typescript@5.9.3)(web-tree-sitter@0.25.10)(ws@8.19.0)
-      apache-arrow:
-        specifier: ^17.0.0
-        version: 17.0.0
       cli-table3:
         specifier: ^0.6.5
         version: 0.6.5
       react:
         specifier: ^19.2.3
         version: 19.2.3
+    optionalDependencies:
+      '@parquetlens/sql':
+        specifier: workspace:*
+        version: link:../../packages/sql
     devDependencies:
       '@parquetlens/parquet-reader':
         specifier: workspace:*
@@ -57,9 +55,21 @@ importers:
 
   packages/parquet-reader:
     dependencies:
+      hyparquet:
+        specifier: ^1.23.0
+        version: 1.24.0
+      hyparquet-compressors:
+        specifier: ^1.1.1
+        version: 1.1.1
+
+  packages/sql:
+    dependencies:
       '@duckdb/duckdb-wasm':
         specifier: ^1.32.0
         version: 1.32.0
+      '@parquetlens/parquet-reader':
+        specifier: workspace:*
+        version: link:../parquet-reader
       apache-arrow:
         specifier: ^17.0.0
         version: 17.0.0
@@ -801,6 +811,9 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
+  fzstd@0.1.1:
+    resolution: {integrity: sha512-dkuVSOKKwh3eas5VkJy1AW1vFpet8TA/fGmVA5krThl8YcOVE/8ZIoEA1+U1vEn5ckxxhLirSdY837azmbaNHA==}
+
   get-tsconfig@4.13.0:
     resolution: {integrity: sha512-1VKTZJCwBrvbd+Wn3AOgQP/2Av+TfTCOlE4AcRJE72W1ksZXbAx8PPBR9RzgTeSPzlPMHrbANMH3LbltH73wxQ==}
 
@@ -810,6 +823,15 @@ packages:
   has-flag@4.0.0:
     resolution: {integrity: sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ==}
     engines: {node: '>=8'}
+
+  hyparquet-compressors@1.1.1:
+    resolution: {integrity: sha512-yx7aA3Rhj0YycbdV71+XznQSLAefa4cT0urpgNXy4aM6eSeCknaVDNne8y45Uz74Fb15yyXUzOStlceOJBan7A==}
+
+  hyparquet@1.24.0:
+    resolution: {integrity: sha512-w9TL/dSK/55kPUQcxryhwVisp4fxSq3xDoDz/MNYjoomVMFsh/mLK+BA3xxpRuoPTyxLJRnlRQJt6IZ9bXgOcA==}
+
+  hysnappy@1.0.0:
+    resolution: {integrity: sha512-MNrC4NfwDGPb889O6gIfEtbvEZCSWUsSEhsz4Oq2FRcpGtXHfeVz3KciSPp5Pnnz1NjFMgDQNfxdJozymJEDDA==}
 
   ieee754@1.2.1:
     resolution: {integrity: sha512-dcyqhDvX1C46lXZcVqCpK+FtMRQVdIMN6/Df5js2zouUsqG7I6sFxitIC+7KYK29KdXOLHdu9zL4sFnoVQnqaA==}
@@ -1995,6 +2017,8 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
+  fzstd@0.1.1: {}
+
   get-tsconfig@4.13.0:
     dependencies:
       resolve-pkg-maps: 1.0.0
@@ -2005,6 +2029,15 @@ snapshots:
       omggif: 1.0.10
 
   has-flag@4.0.0: {}
+
+  hyparquet-compressors@1.1.1:
+    dependencies:
+      fzstd: 0.1.1
+      hysnappy: 1.0.0
+
+  hyparquet@1.24.0: {}
+
+  hysnappy@1.0.0: {}
 
   ieee754@1.2.1: {}
 

@@ -1,5 +1,5 @@
 {
-  "name": "@parquetlens/parquet-reader",
+  "name": "@parquetlens/sql",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,11 +9,12 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --sourcemap",
+    "build": "tsup",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "hyparquet": "^1.23.0",
-    "hyparquet-compressors": "^1.1.1"
+    "@duckdb/duckdb-wasm": "^1.32.0",
+    "@parquetlens/parquet-reader": "workspace:*",
+    "apache-arrow": "^17.0.0"
   }
 }

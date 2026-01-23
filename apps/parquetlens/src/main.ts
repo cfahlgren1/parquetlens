@@ -1,15 +1,13 @@
 #!/usr/bin/env node
 import {
-  ParquetReadOptions,
-  readParquetTableFromPath,
-  readParquetTableFromStdin,
-  readParquetTableFromUrl,
-  resolveParquetUrl,
-  runSqlOnParquet,
-  runSqlOnParquetFromStdin,
+  openParquetSource,
+  openParquetSourceFromBuffer,
+  type ParquetMetadata,
+  type ParquetReadOptions,
+  type ParquetRow,
 } from "@parquetlens/parquet-reader";
-import type { Table } from "apache-arrow";
 import CliTable3 from "cli-table3";
+import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath as nodeFileURLToPath } from "node:url";
@@ -18,9 +16,7 @@ import { fileURLToPath as nodeFileURLToPath } from "node:url";
 // In dev mode (tsx/ESM), we derive it from import.meta.url.
 // Use a different name to avoid duplicate declaration with banner.
 const __parquetlens_filename =
-  typeof __filename !== "undefined"
-    ? __filename
-    : nodeFileURLToPath(import.meta.url);
+  typeof __filename !== "undefined" ? __filename : nodeFileURLToPath(import.meta.url);
 
 declare const __filename: string;
 
@@ -42,6 +38,14 @@ type ParsedArgs = {
   limitSpecified: boolean;
   help: boolean;
   error?: string;
+};
+
+type ColumnDef = { name: string; type: string };
+
+type LoadedData = {
+  rows: ParquetRow[];
+  metadata: ParquetMetadata | null;
+  title: string;
 };
 
 const DEFAULT_LIMIT = 20;
@@ -207,52 +211,17 @@ examples:
   process.stdout.write(helpText);
 }
 
-function formatSchema(table: Table): string {
-  const lines = table.schema.fields.map((field, index) => {
-    const typeName = String(field.type);
-    return `${index + 1}. ${field.name}: ${typeName}`;
+function formatSchema(columns: ColumnDef[]): string {
+  if (columns.length === 0) {
+    return "(schema unavailable)";
+  }
+
+  const lines = columns.map((column, index) => {
+    const typeName = column.type || "unknown";
+    return `${index + 1}. ${column.name}: ${typeName}`;
   });
 
   return lines.join("\n");
-}
-
-function totalRows(table: Table): number {
-  return table.batches.reduce((count, batch) => count + batch.numRows, 0);
-}
-
-function resolveColumns(table: Table, requested: string[]): { names: string[]; indices: number[] } {
-  const fields = table.schema.fields;
-  const nameToIndex = new Map<string, number>();
-
-  fields.forEach((field, index) => {
-    nameToIndex.set(field.name, index);
-  });
-
-  const names = requested.length > 0 ? requested : fields.map((field) => field.name);
-  const missing = names.filter((name) => !nameToIndex.has(name));
-
-  if (missing.length > 0) {
-    throw new Error(`unknown columns: ${missing.join(", ")}`);
-  }
-
-  return {
-    names,
-    indices: names.map((name) => nameToIndex.get(name) ?? -1),
-  };
-}
-
-type ColumnDef = { name: string; type: string };
-
-function getColumnDefs(table: Table, requestedColumns: string[]): ColumnDef[] {
-  const fields = table.schema.fields;
-  if (requestedColumns.length === 0) {
-    return fields.map((f) => ({ name: f.name, type: String(f.type) }));
-  }
-  const fieldMap = new Map(fields.map((f) => [f.name, f]));
-  return requestedColumns.map((name) => {
-    const field = fieldMap.get(name);
-    return { name, type: field ? String(field.type) : "unknown" };
-  });
 }
 
 function truncateCell(value: string, maxWidth: number): string {
@@ -336,55 +305,135 @@ function formatCell(value: unknown): unknown {
 }
 
 function previewRows(
-  table: Table,
+  rows: ParquetRow[],
   limit: number,
-  requestedColumns: string[],
+  columns: ColumnDef[],
 ): Record<string, unknown>[] {
-  const { names, indices } = resolveColumns(table, requestedColumns);
-  const rows: Record<string, unknown>[] = [];
+  const safeLimit = Math.max(0, limit);
+  const names = columns.map((column) => column.name);
 
-  for (const batch of table.batches) {
-    const vectors = indices.map((index) => batch.getChildAt(index));
+  return rows.slice(0, safeLimit).map((row) => {
+    const formatted: Record<string, unknown> = {};
+    for (const name of names) {
+      formatted[name] = formatCell(row[name]);
+    }
+    return formatted;
+  });
+}
 
-    for (let rowIndex = 0; rowIndex < batch.numRows; rowIndex += 1) {
-      if (rows.length >= limit) {
-        return rows;
+function inferColumnType(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "unknown";
+  }
+
+  if (typeof value === "bigint") {
+    return "bigint";
+  }
+
+  if (value instanceof Date) {
+    return "timestamp";
+  }
+
+  if (value instanceof Uint8Array) {
+    return "binary";
+  }
+
+  if (Array.isArray(value)) {
+    return "array";
+  }
+
+  if (typeof value === "object") {
+    return "object";
+  }
+
+  return typeof value;
+}
+
+function getColumnDefsFromRows(rows: ParquetRow[], requestedColumns: string[]): ColumnDef[] {
+  const names =
+    requestedColumns.length > 0
+      ? requestedColumns
+      : rows.length > 0
+        ? Object.keys(rows[0] ?? {})
+        : [];
+
+  return names.map((name) => {
+    const value = rows.find((row) => row[name] !== null && row[name] !== undefined)?.[name];
+    return { name, type: inferColumnType(value) };
+  });
+}
+
+function getColumnDefs(
+  metadata: ParquetMetadata | null,
+  rows: ParquetRow[],
+  requestedColumns: string[],
+): ColumnDef[] {
+  if (metadata?.columns?.length) {
+    const available = new Set(metadata.columns.map((col) => col.name));
+    if (requestedColumns.length > 0) {
+      const missing = requestedColumns.filter((name) => !available.has(name));
+      if (missing.length > 0) {
+        throw new Error(`unknown columns: ${missing.join(", ")}`);
       }
+    }
 
-      const row: Record<string, unknown> = {};
+    const names =
+      requestedColumns.length > 0 ? requestedColumns : metadata.columns.map((col) => col.name);
+    return names.map((name) => {
+      const meta = metadata.columns.find((col) => col.name === name);
+      const fallback = rows.find((row) => row[name] !== null && row[name] !== undefined)?.[name];
+      return { name, type: meta?.type ?? inferColumnType(fallback) };
+    });
+  }
 
-      for (let colIndex = 0; colIndex < names.length; colIndex += 1) {
-        const vector = vectors[colIndex];
-        row[names[colIndex]] = formatCell(vector?.get(rowIndex));
-      }
-
-      rows.push(row);
+  if (requestedColumns.length > 0 && rows.length > 0) {
+    const available = new Set(Object.keys(rows[0] ?? {}));
+    const missing = requestedColumns.filter((name) => !available.has(name));
+    if (missing.length > 0) {
+      throw new Error(`unknown columns: ${missing.join(", ")}`);
     }
   }
 
-  return rows;
+  return getColumnDefsFromRows(rows, requestedColumns);
 }
 
-async function loadTable(
+async function loadRowsAndMetadata(
   input: string | undefined,
   readOptions: ParquetReadOptions,
-): Promise<Table> {
+): Promise<LoadedData> {
   const stdinFallback = process.stdin.isTTY ? undefined : "-";
-  const source = input ?? stdinFallback;
+  const sourceInput = input ?? stdinFallback;
 
-  if (!source) {
+  if (!sourceInput) {
     throw new Error("missing input file (pass a path, URL, or pipe stdin)");
   }
 
-  if (source === "-") {
-    return readParquetTableFromStdin("stdin.parquet", readOptions);
+  if (sourceInput === "-") {
+    const buffer = await readStdinBuffer();
+    const source = await openParquetSourceFromBuffer(buffer);
+
+    try {
+      const [rows, metadata] = await Promise.all([
+        source.readTable(readOptions),
+        source.readMetadata().catch(() => null),
+      ]);
+      return { rows, metadata, title: "stdin" };
+    } finally {
+      await source.close();
+    }
   }
 
-  if (resolveParquetUrl(source)) {
-    return readParquetTableFromUrl(source, readOptions);
-  }
+  const source = await openParquetSource(sourceInput);
 
-  return readParquetTableFromPath(source, readOptions);
+  try {
+    const [rows, metadata] = await Promise.all([
+      source.readTable(readOptions),
+      source.readMetadata().catch(() => null),
+    ]);
+    return { rows, metadata, title: sourceInput };
+  } finally {
+    await source.close();
+  }
 }
 
 async function main(): Promise<void> {
@@ -413,20 +462,40 @@ async function main(): Promise<void> {
       return;
     }
 
-    const table =
+    let runSqlOnParquet: (input: string, query: string) => Promise<ParquetRow[]>;
+    let runSqlOnParquetFromStdin: (query: string) => Promise<ParquetRow[]>;
+
+    try {
+      ({ runSqlOnParquet, runSqlOnParquetFromStdin } = await import("@parquetlens/sql"));
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      process.stderr.write(
+        `parquetlens: SQL support requires the optional @parquetlens/sql package (${message})\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    const rows =
       source === "-"
         ? await runSqlOnParquetFromStdin(options.sql)
         : await runSqlOnParquet(source, options.sql);
 
+    const sqlColumns = getColumnDefsFromRows(rows, []);
+
     // Use TUI for SQL results if not in JSON/plain mode
     const wantsSqlTui =
-      !options.json && options.tuiMode !== "off" && source !== "-" && process.stdin.isTTY && process.stdout.isTTY;
+      !options.json &&
+      options.tuiMode !== "off" &&
+      source !== "-" &&
+      process.stdin.isTTY &&
+      process.stdout.isTTY;
 
     if (wantsSqlTui) {
       if (isBunRuntime()) {
-        const { runTuiWithTable } = await importTuiModule();
+        const { runTuiWithRows } = await importTuiModule();
         const title = `SQL: ${options.sql.slice(0, 50)}${options.sql.length > 50 ? "..." : ""}`;
-        await runTuiWithTable(table, title, { columns: [], maxRows: options.limit });
+        await runTuiWithRows(rows, title, { columns: [], maxRows: options.limit });
         return;
       }
       // Spawn bun to re-run the query and display in TUI
@@ -437,15 +506,14 @@ async function main(): Promise<void> {
       process.stderr.write("parquetlens: bun not found, falling back to plain output\n");
     }
 
-    const sqlColumns = getColumnDefs(table, []);
-    const rows = previewRows(table, options.limit, []);
+    const preview = previewRows(rows, options.limit, sqlColumns);
 
     if (options.json) {
-      for (const row of rows) {
+      for (const row of preview) {
         process.stdout.write(`${JSON.stringify(row)}\n`);
       }
     } else {
-      printTable(rows, sqlColumns);
+      printTable(preview, sqlColumns);
     }
     return;
   }
@@ -478,37 +546,38 @@ async function main(): Promise<void> {
   }
 
   const readOptions: ParquetReadOptions = {
-    batchSize: 1024,
     columns: options.columns.length > 0 ? options.columns : undefined,
     limit: options.schemaOnly ? 0 : options.limit,
+    offset: 0,
   };
 
-  const table = await loadTable(input, readOptions);
+  const { rows, metadata, title } = await loadRowsAndMetadata(input, readOptions);
+  const columnDefs = getColumnDefs(metadata, rows, options.columns);
 
   if (options.showSchema || options.schemaOnly) {
-    const rowsCount = totalRows(table);
-    const title = input ? path.basename(input) : "stdin";
+    const rowsCount = rows.length;
     const limitSuffix = readOptions.limit ? ` (limit ${readOptions.limit})` : "";
-    process.stdout.write(`file: ${title}\nrows loaded: ${rowsCount}${limitSuffix}\n`);
+    process.stdout.write(
+      `file: ${path.basename(title)}\nrows loaded: ${rowsCount}${limitSuffix}\n`,
+    );
     process.stdout.write("schema:\n");
-    process.stdout.write(`${formatSchema(table)}\n`);
+    process.stdout.write(`${formatSchema(columnDefs)}\n`);
   }
 
   if (options.schemaOnly) {
     return;
   }
 
-  const columnDefs = getColumnDefs(table, options.columns);
-  const rows = previewRows(table, options.limit, options.columns);
+  const preview = previewRows(rows, options.limit, columnDefs);
 
   if (options.json) {
-    for (const row of rows) {
+    for (const row of preview) {
       process.stdout.write(`${JSON.stringify(row)}\n`);
     }
     return;
   }
 
-  printTable(rows, columnDefs);
+  printTable(preview, columnDefs);
 }
 
 function resolveTuiMode(mode: TuiMode, options: Options): boolean {
@@ -549,6 +618,20 @@ async function importTuiModule(): Promise<typeof import("./tui.js")> {
   const extension = path.extname(__parquetlens_filename);
   const modulePath = extension === ".js" ? "./tui.js" : "./tui.tsx";
   return import(modulePath);
+}
+
+async function readStdinBuffer(): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+
+  for await (const chunk of process.stdin) {
+    if (typeof chunk === "string") {
+      chunks.push(Buffer.from(chunk));
+    } else {
+      chunks.push(chunk);
+    }
+  }
+
+  return Buffer.concat(chunks);
 }
 
 main().catch((error) => {
