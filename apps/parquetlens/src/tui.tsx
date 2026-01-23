@@ -81,8 +81,38 @@ async function createTuiRenderer() {
 
 export async function runTui(input: string, options: TuiOptions): Promise<void> {
   const source = await openParquetSource(input);
+
+  // Load initial data before opening TUI
+  const initialLimit = options.maxRows ? Math.min(50, options.maxRows) : 50;
+  const table = await source.readTable({
+    batchSize: options.batchSize ?? 1024,
+    columns: options.columns.length > 0 ? options.columns : undefined,
+    limit: initialLimit,
+    offset: 0,
+  });
+
+  const initialColumns: ColumnInfo[] = table.schema.fields.map((field) => ({
+    name: field.name,
+    type: formatArrowType(field.type),
+  }));
+  const initialRows = tableToGridRows(table, initialColumns.map((c) => c.name));
+  const initialGrid: GridState = { columns: initialColumns, rows: initialRows };
+
+  // Load metadata
+  const metadata = await source.readMetadata().catch(() => null);
+
   const { root, handleExit } = await createTuiRenderer();
-  root.render(<App source={source} filePath={input} options={options} onExit={handleExit} />);
+  root.render(
+    <App
+      source={source}
+      filePath={input}
+      options={options}
+      onExit={handleExit}
+      initialGrid={initialGrid}
+      initialMetadata={metadata}
+      initialKnownTotal={initialRows.length < initialLimit ? initialRows.length : null}
+    />
+  );
 }
 
 export async function runTuiWithTable(
@@ -360,20 +390,24 @@ type AppProps = {
   filePath: string;
   options: TuiOptions;
   onExit: () => void;
+  initialGrid?: GridState;
+  initialMetadata?: ParquetFileMetadata | null;
+  initialKnownTotal?: number | null;
 };
 
-function App({ source, filePath, options, onExit }: AppProps) {
+function App({ source, filePath, options, onExit, initialGrid, initialMetadata, initialKnownTotal }: AppProps) {
   const { height } = useTerminalDimensions();
   const pageSize = Math.max(1, height - RESERVED_LINES);
 
   const [offset, setOffset] = useState(0);
-  const [grid, setGrid] = useState<GridState>({ columns: [], rows: [] });
-  const [loading, setLoading] = useState(true);
+  const [grid, setGrid] = useState<GridState>(initialGrid ?? { columns: [], rows: [] });
+  const [loading, setLoading] = useState(!initialGrid);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(null);
-  const [knownTotalRows, setKnownTotalRows] = useState<number | null>(null);
+  const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(initialMetadata ?? null);
+  const [knownTotalRows, setKnownTotalRows] = useState<number | null>(initialKnownTotal ?? null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initialLoadDone = useRef(!!initialGrid);
 
   const effectiveTotal = options.maxRows ?? knownTotalRows;
   const maxOffset =
@@ -392,6 +426,12 @@ function App({ source, filePath, options, onExit }: AppProps) {
 
   // Load data when offset changes
   useEffect(() => {
+    // Skip initial load if we have preloaded data
+    if (offset === 0 && initialLoadDone.current) {
+      initialLoadDone.current = false; // Allow subsequent loads at offset 0
+      return;
+    }
+
     let canceled = false;
 
     const loadWindow = async () => {
@@ -441,8 +481,10 @@ function App({ source, filePath, options, onExit }: AppProps) {
     };
   }, [columnsToRead, offset, options.batchSize, options.maxRows, pageSize, source]);
 
-  // Load metadata
+  // Load metadata (skip if preloaded)
   useEffect(() => {
+    if (initialMetadata !== undefined) return;
+
     let canceled = false;
     source
       .readMetadata()
@@ -455,7 +497,7 @@ function App({ source, filePath, options, onExit }: AppProps) {
     return () => {
       canceled = true;
     };
-  }, [source]);
+  }, [initialMetadata, source]);
 
   // Cleanup notice timer
   useEffect(() => {

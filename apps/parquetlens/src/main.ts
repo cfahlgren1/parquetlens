@@ -241,6 +241,16 @@ function resolveColumns(table: Table, requested: string[]): { names: string[]; i
   };
 }
 
+const MAX_CELL_WIDTH = 50;
+
+function truncateCell(value: string): string {
+  const oneLine = value.replace(/\n/g, " ");
+  if (oneLine.length <= MAX_CELL_WIDTH) {
+    return oneLine;
+  }
+  return oneLine.slice(0, MAX_CELL_WIDTH - 3) + "...";
+}
+
 function printTable(rows: Record<string, unknown>[]): void {
   if (rows.length === 0) {
     process.stdout.write("(no rows)\n");
@@ -254,7 +264,7 @@ function printTable(rows: Record<string, unknown>[]): void {
   });
 
   for (const row of rows) {
-    table.push(columns.map((col) => String(row[col] ?? "")));
+    table.push(columns.map((col) => truncateCell(String(row[col] ?? ""))));
   }
 
   process.stdout.write(table.toString() + "\n");
