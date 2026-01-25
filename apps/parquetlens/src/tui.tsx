@@ -11,6 +11,8 @@ import type {
 } from "@parquetlens/parquet-reader";
 import { openParquetSource } from "@parquetlens/parquet-reader";
 
+import { safeStringify } from "./formatting.js";
+
 type TuiOptions = {
   columns: string[];
   maxRows?: number;
@@ -987,11 +989,7 @@ function formatCellDetail(value: unknown): string {
   }
 
   if (typeof value === "object") {
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return String(value);
-    }
+    return safeStringify(value);
   }
 
   return String(value);

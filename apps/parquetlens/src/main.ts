@@ -12,6 +12,8 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath as nodeFileURLToPath } from "node:url";
 
+import { safeStringify } from "./formatting.js";
+
 // __filename is provided by tsup banner in production.
 // In dev mode (tsx/ESM), we derive it from import.meta.url.
 // Use a different name to avoid duplicate declaration with banner.
@@ -294,11 +296,7 @@ function formatCell(value: unknown): unknown {
   }
 
   if (typeof value === "object") {
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return String(value);
-    }
+    return safeStringify(value);
   }
 
   return value;
