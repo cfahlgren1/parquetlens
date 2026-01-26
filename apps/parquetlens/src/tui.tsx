@@ -489,7 +489,7 @@ function App({
           setWindowRows(rowsPage);
           setColumns(nextColumns);
           setOffset(targetOffset);
-          if (rowsPage.length < limit) {
+          if (rowsPage.length < limit && options.maxRows === undefined && knownTotalRows === null) {
             setKnownTotalRows(start + rowsPage.length);
           }
         }
