@@ -85,8 +85,25 @@ async function createTuiRenderer() {
 export async function runTui(input: string, options: TuiOptions): Promise<void> {
   const source = await openParquetSource(input);
 
-  const metadata = await source.readMetadata().catch(() => null);
-  const initialKnownTotal = resolveInitialTotal(metadata, [], 0);
+  const terminalRows = process.stdout.rows ?? 24;
+  const pageSize = Math.max(1, terminalRows - RESERVED_LINES);
+  const windowSize = Math.max(50, pageSize * 3);
+  const initialLimit = options.maxRows ? Math.min(windowSize, options.maxRows) : windowSize;
+  const readOptions: ParquetReadOptions = {
+    batchSize: options.batchSize ?? 1024,
+    columns: options.columns.length > 0 ? options.columns : undefined,
+    limit: initialLimit,
+    offset: 0,
+  };
+
+  const [initialRows, metadata] = await Promise.all([
+    source.readTable(readOptions),
+    source.readMetadata().catch(() => null),
+  ]);
+
+  const initialColumns = buildColumnInfo(metadata, initialRows, options.columns);
+  const initialGrid: GridState = { columns: initialColumns, rows: initialRows };
+  const initialKnownTotal = resolveInitialTotal(metadata, initialRows, initialLimit);
 
   const { root, handleExit } = await createTuiRenderer();
   root.render(
@@ -95,6 +112,7 @@ export async function runTui(input: string, options: TuiOptions): Promise<void> 
       filePath={input}
       options={options}
       onExit={handleExit}
+      initialGrid={initialGrid}
       initialMetadata={metadata}
       initialKnownTotal={initialKnownTotal}
     />,
