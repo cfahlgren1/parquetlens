@@ -11,6 +11,8 @@ import type {
 } from "@parquetlens/parquet-reader";
 import { openParquetSource } from "@parquetlens/parquet-reader";
 
+import { safeStringify } from "./formatting.js";
+
 type TuiOptions = {
   columns: string[];
   maxRows?: number;
@@ -83,8 +85,10 @@ async function createTuiRenderer() {
 export async function runTui(input: string, options: TuiOptions): Promise<void> {
   const source = await openParquetSource(input);
 
-  // Load initial data before opening TUI
-  const initialLimit = options.maxRows ? Math.min(50, options.maxRows) : 50;
+  const terminalRows = process.stdout.rows ?? 24;
+  const pageSize = Math.max(1, terminalRows - RESERVED_LINES);
+  const windowSize = Math.max(50, pageSize * 3);
+  const initialLimit = options.maxRows ? Math.min(windowSize, options.maxRows) : windowSize;
   const readOptions: ParquetReadOptions = {
     batchSize: options.batchSize ?? 1024,
     columns: options.columns.length > 0 ? options.columns : undefined,
@@ -408,7 +412,9 @@ function App({
   const pageSize = Math.max(1, height - RESERVED_LINES);
 
   const [offset, setOffset] = useState(0);
-  const [rows, setRows] = useState<ParquetRow[]>(initialGrid?.rows ?? []);
+  const [pendingOffset, setPendingOffset] = useState(0);
+  const [windowStart, setWindowStart] = useState(0);
+  const [windowRows, setWindowRows] = useState<ParquetRow[]>(initialGrid?.rows ?? []);
   const [columns, setColumns] = useState<ColumnInfo[]>(initialGrid?.columns ?? []);
   const [loading, setLoading] = useState(!initialGrid);
   const [error, setError] = useState<string | null>(null);
@@ -416,7 +422,6 @@ function App({
   const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(initialMetadata ?? null);
   const [knownTotalRows, setKnownTotalRows] = useState<number | null>(initialKnownTotal ?? null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const initialLoadDone = useRef(!!initialGrid);
 
   const effectiveTotal = options.maxRows ?? knownTotalRows;
   const maxOffset =
@@ -425,7 +430,13 @@ function App({
       : Math.max(0, effectiveTotal - pageSize);
 
   const columnsToRead = options.columns;
-  const grid = useMemo(() => ({ columns, rows }), [columns, rows]);
+  const visibleRows = useMemo(() => {
+    if (windowRows.length === 0) return [];
+    const startIndex = offset - windowStart;
+    if (startIndex < 0 || startIndex >= windowRows.length) return [];
+    return windowRows.slice(startIndex, startIndex + pageSize);
+  }, [offset, pageSize, windowRows, windowStart]);
+  const grid = useMemo(() => ({ columns, rows: visibleRows }), [columns, visibleRows]);
 
   // Cleanup source on unmount
   useEffect(() => {
@@ -436,35 +447,50 @@ function App({
 
   // Load data when offset changes
   useEffect(() => {
-    // Skip initial load if we have preloaded data
-    if (offset === 0 && initialLoadDone.current) {
-      initialLoadDone.current = false; // Allow subsequent loads at offset 0
+    const windowEnd = windowStart + windowRows.length;
+    const withinWindow =
+      windowRows.length > 0 &&
+      pendingOffset >= windowStart &&
+      pendingOffset + pageSize <= windowEnd;
+    if (withinWindow) {
+      if (offset !== pendingOffset) {
+        setOffset(pendingOffset);
+      }
+      if (loading) {
+        setLoading(false);
+      }
       return;
     }
 
     let canceled = false;
+    const targetOffset = pendingOffset;
 
     const loadWindow = async () => {
       setLoading(true);
       setError(null);
       try {
-        const limit = options.maxRows
-          ? Math.max(0, Math.min(pageSize, options.maxRows - offset))
-          : pageSize;
+        const windowSize = Math.max(50, pageSize * 3);
+        const start = Math.max(0, targetOffset - pageSize);
+        const maxRows = options.maxRows ?? knownTotalRows;
+        const remaining =
+          maxRows === undefined || maxRows === null ? undefined : Math.max(0, maxRows - start);
+        const limit = remaining === undefined ? windowSize : Math.min(windowSize, remaining);
         const readOptions: ParquetReadOptions = {
           batchSize: options.batchSize ?? 1024,
           columns: columnsToRead.length > 0 ? columnsToRead : undefined,
           limit,
-          offset,
+          offset: start,
         };
         const rowsPage = await source.readTable(readOptions);
         const nextColumns = buildColumnInfo(metadata, rowsPage, columnsToRead);
 
         if (!canceled) {
-          setRows(rowsPage);
+          setWindowStart(start);
+          setWindowRows(rowsPage);
           setColumns(nextColumns);
-          if (rowsPage.length < limit) {
-            setKnownTotalRows(offset + rowsPage.length);
+          setOffset(targetOffset);
+          if (rowsPage.length < limit && options.maxRows === undefined && knownTotalRows === null) {
+            setKnownTotalRows(start + rowsPage.length);
           }
         }
       } catch (caught) {
@@ -483,7 +509,19 @@ function App({
     return () => {
       canceled = true;
     };
-  }, [columnsToRead, metadata, offset, options.batchSize, options.maxRows, pageSize, source]);
+  }, [
+    columnsToRead,
+    knownTotalRows,
+    loading,
+    metadata,
+    pendingOffset,
+    options.batchSize,
+    options.maxRows,
+    pageSize,
+    source,
+    windowRows.length,
+    windowStart,
+  ]);
 
   // Load metadata (skip if preloaded)
   useEffect(() => {
@@ -505,8 +543,8 @@ function App({
 
   useEffect(() => {
     if (!metadata) return;
-    setColumns(buildColumnInfo(metadata, rows, columnsToRead));
-  }, [columnsToRead, metadata, rows]);
+    setColumns(buildColumnInfo(metadata, windowRows, columnsToRead));
+  }, [columnsToRead, metadata, windowRows]);
 
   // Cleanup notice timer
   useEffect(() => {
@@ -528,7 +566,7 @@ function App({
       grid={grid}
       title={filePath}
       offset={offset}
-      setOffset={setOffset}
+      setOffset={setPendingOffset}
       maxOffset={maxOffset}
       totalRows={effectiveTotal ?? undefined}
       pageSize={pageSize}
@@ -987,11 +1025,7 @@ function formatCellDetail(value: unknown): string {
   }
 
   if (typeof value === "object") {
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return String(value);
-    }
+    return safeStringify(value);
   }
 
   return String(value);
