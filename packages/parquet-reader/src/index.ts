@@ -14,6 +14,13 @@ import {
   getMetadata,
   readParquet,
 } from "./reader.js";
+import {
+  readPage,
+  streamRows,
+  type PageOptions,
+  type PageResult,
+  type StreamOptions,
+} from "./streaming.js";
 import type { ParquetMetadata, ParquetReadOptions, ParquetRow } from "./types.js";
 import { resolveParquetUrl } from "./urls.js";
 
@@ -147,6 +154,68 @@ function createParquetSource(file: ParquetFile): ParquetSource {
   };
 }
 
+// Streaming API
+
+async function resolveInputToFile(input: string): Promise<ParquetFile> {
+  const resolved = resolveParquetUrl(input);
+  if (resolved) {
+    return asyncBufferFromHttpUrl(resolved.url);
+  }
+  return asyncBufferFromPath(input);
+}
+
+/**
+ * Stream rows from a parquet file.
+ *
+ * By default, yields individual rows. Set `batchSize` to yield arrays of rows.
+ *
+ * @example
+ * // Stream rows one at a time
+ * for await (const row of streamParquet('data.parquet')) {
+ *   console.log(row);
+ * }
+ *
+ * @example
+ * // Stream in batches
+ * for await (const batch of streamParquet('large.parquet', { batchSize: 1000 })) {
+ *   await processBatch(batch);
+ * }
+ *
+ * @example
+ * // Select columns
+ * for await (const row of streamParquet('data.parquet', { columns: ['id', 'name'] })) {
+ *   console.log(row.id, row.name);
+ * }
+ *
+ * @example
+ * // Cancellable streaming
+ * const controller = new AbortController();
+ * for await (const row of streamParquet('huge.parquet', { signal: controller.signal })) {
+ *   if (found) controller.abort();
+ * }
+ */
+export async function* streamParquet(
+  input: string,
+  options?: StreamOptions,
+): AsyncGenerator<ParquetRow | ParquetRow[]> {
+  const file = await resolveInputToFile(input);
+  yield* streamRows(file, options);
+}
+
+/**
+ * Read a specific page of rows from a parquet file.
+ *
+ * @example
+ * const { rows, hasMore, totalRows } = await readParquetPage('data.parquet', {
+ *   page: 0,
+ *   pageSize: 100
+ * });
+ */
+export async function readParquetPage(input: string, options: PageOptions): Promise<PageResult> {
+  const file = await resolveInputToFile(input);
+  return readPage(file, options);
+}
+
 export { resolveParquetUrl } from "./urls.js";
 export type { ResolvedParquetUrl } from "./urls.js";
 export type {
@@ -156,3 +225,4 @@ export type {
   ParquetReadOptions,
   ParquetRow,
 } from "./types.js";
+export type { PageOptions, PageResult, StreamOptions } from "./streaming.js";
