@@ -6,21 +6,23 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.join(__dirname, "../dist/main.js");
 const FIXTURE_PATH = path.join(__dirname, "../test/fixtures/sample.parquet");
+const sqlEnabled = process.env.PARQUETLENS_SQL_TESTS === "1";
+const describeSql = sqlEnabled ? describe : describe.skip;
 
-beforeAll(
-  () => {
-    const parquetReader = spawnSync(
-      "pnpm",
-      ["-C", path.join(__dirname, "../../..", "packages/parquet-reader"), "build"],
-      { stdio: "ignore" },
-    );
-    if (parquetReader.error) {
-      throw parquetReader.error;
-    }
-    if (parquetReader.status !== 0) {
-      throw new Error(`parquet-reader build failed with exit code ${parquetReader.status}`);
-    }
+beforeAll(() => {
+  const parquetReader = spawnSync(
+    "pnpm",
+    ["-C", path.join(__dirname, "../../..", "packages/parquet-reader"), "build"],
+    { stdio: "ignore" },
+  );
+  if (parquetReader.error) {
+    throw parquetReader.error;
+  }
+  if (parquetReader.status !== 0) {
+    throw new Error(`parquet-reader build failed with exit code ${parquetReader.status}`);
+  }
 
+  if (sqlEnabled) {
     const parquetSql = spawnSync(
       "pnpm",
       ["-C", path.join(__dirname, "../../..", "packages/sql"), "build"],
@@ -32,19 +34,18 @@ beforeAll(
     if (parquetSql.status !== 0) {
       throw new Error(`parquet sql build failed with exit code ${parquetSql.status}`);
     }
+  }
 
-    const result = spawnSync("pnpm", ["-C", path.join(__dirname, ".."), "build"], {
-      stdio: "ignore",
-    });
-    if (result.error) {
-      throw result.error;
-    }
-    if (result.status !== 0) {
-      throw new Error(`pnpm build failed with exit code ${result.status}`);
-    }
-  },
-  30000,
-);
+  const result = spawnSync("pnpm", ["-C", path.join(__dirname, ".."), "build"], {
+    stdio: "ignore",
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(`pnpm build failed with exit code ${result.status}`);
+  }
+}, 30000);
 
 function parseJsonLines(stdout: string): Record<string, unknown>[] {
   return stdout
@@ -127,9 +128,6 @@ describe("local parquet fixture", () => {
     expect(rows[0]?.city).toBe("Seattle");
   });
 });
-
-const sqlEnabled = process.env.PARQUETLENS_SQL_TESTS === "1";
-const describeSql = sqlEnabled ? describe : describe.skip;
 
 describeSql("SQL queries", () => {
   const sqlTimeout = 20000;
