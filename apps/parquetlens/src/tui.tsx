@@ -412,6 +412,7 @@ function App({
   const pageSize = Math.max(1, height - RESERVED_LINES);
 
   const [offset, setOffset] = useState(0);
+  const [pendingOffset, setPendingOffset] = useState(0);
   const [windowStart, setWindowStart] = useState(0);
   const [windowRows, setWindowRows] = useState<ParquetRow[]>(initialGrid?.rows ?? []);
   const [columns, setColumns] = useState<ColumnInfo[]>(initialGrid?.columns ?? []);
@@ -448,8 +449,13 @@ function App({
   useEffect(() => {
     const windowEnd = windowStart + windowRows.length;
     const withinWindow =
-      windowRows.length > 0 && offset >= windowStart && offset + pageSize <= windowEnd;
+      windowRows.length > 0 &&
+      pendingOffset >= windowStart &&
+      pendingOffset + pageSize <= windowEnd;
     if (withinWindow) {
+      if (offset !== pendingOffset) {
+        setOffset(pendingOffset);
+      }
       if (loading) {
         setLoading(false);
       }
@@ -457,13 +463,14 @@ function App({
     }
 
     let canceled = false;
+    const targetOffset = pendingOffset;
 
     const loadWindow = async () => {
       setLoading(true);
       setError(null);
       try {
         const windowSize = Math.max(50, pageSize * 3);
-        const start = Math.max(0, offset - pageSize);
+        const start = Math.max(0, targetOffset - pageSize);
         const maxRows = options.maxRows ?? knownTotalRows;
         const remaining =
           maxRows === undefined || maxRows === null ? undefined : Math.max(0, maxRows - start);
@@ -481,6 +488,7 @@ function App({
           setWindowStart(start);
           setWindowRows(rowsPage);
           setColumns(nextColumns);
+          setOffset(targetOffset);
           if (rowsPage.length < limit) {
             setKnownTotalRows(start + rowsPage.length);
           }
@@ -506,7 +514,7 @@ function App({
     knownTotalRows,
     loading,
     metadata,
-    offset,
+    pendingOffset,
     options.batchSize,
     options.maxRows,
     pageSize,
@@ -558,7 +566,7 @@ function App({
       grid={grid}
       title={filePath}
       offset={offset}
-      setOffset={setOffset}
+      setOffset={setPendingOffset}
       maxOffset={maxOffset}
       totalRows={effectiveTotal ?? undefined}
       pageSize={pageSize}
