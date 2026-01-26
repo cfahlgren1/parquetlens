@@ -85,23 +85,8 @@ async function createTuiRenderer() {
 export async function runTui(input: string, options: TuiOptions): Promise<void> {
   const source = await openParquetSource(input);
 
-  // Load initial data before opening TUI
-  const initialLimit = options.maxRows ? Math.min(50, options.maxRows) : 50;
-  const readOptions: ParquetReadOptions = {
-    batchSize: options.batchSize ?? 1024,
-    columns: options.columns.length > 0 ? options.columns : undefined,
-    limit: initialLimit,
-    offset: 0,
-  };
-
-  const [initialRows, metadata] = await Promise.all([
-    source.readTable(readOptions),
-    source.readMetadata().catch(() => null),
-  ]);
-
-  const initialColumns = buildColumnInfo(metadata, initialRows, options.columns);
-  const initialGrid: GridState = { columns: initialColumns, rows: initialRows };
-  const initialKnownTotal = resolveInitialTotal(metadata, initialRows, initialLimit);
+  const metadata = await source.readMetadata().catch(() => null);
+  const initialKnownTotal = resolveInitialTotal(metadata, [], 0);
 
   const { root, handleExit } = await createTuiRenderer();
   root.render(
@@ -110,7 +95,6 @@ export async function runTui(input: string, options: TuiOptions): Promise<void> 
       filePath={input}
       options={options}
       onExit={handleExit}
-      initialGrid={initialGrid}
       initialMetadata={metadata}
       initialKnownTotal={initialKnownTotal}
     />,
@@ -410,7 +394,8 @@ function App({
   const pageSize = Math.max(1, height - RESERVED_LINES);
 
   const [offset, setOffset] = useState(0);
-  const [rows, setRows] = useState<ParquetRow[]>(initialGrid?.rows ?? []);
+  const [windowStart, setWindowStart] = useState(0);
+  const [windowRows, setWindowRows] = useState<ParquetRow[]>(initialGrid?.rows ?? []);
   const [columns, setColumns] = useState<ColumnInfo[]>(initialGrid?.columns ?? []);
   const [loading, setLoading] = useState(!initialGrid);
   const [error, setError] = useState<string | null>(null);
@@ -418,7 +403,6 @@ function App({
   const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(initialMetadata ?? null);
   const [knownTotalRows, setKnownTotalRows] = useState<number | null>(initialKnownTotal ?? null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const initialLoadDone = useRef(!!initialGrid);
 
   const effectiveTotal = options.maxRows ?? knownTotalRows;
   const maxOffset =
@@ -427,7 +411,13 @@ function App({
       : Math.max(0, effectiveTotal - pageSize);
 
   const columnsToRead = options.columns;
-  const grid = useMemo(() => ({ columns, rows }), [columns, rows]);
+  const visibleRows = useMemo(() => {
+    if (windowRows.length === 0) return [];
+    const startIndex = offset - windowStart;
+    if (startIndex < 0 || startIndex >= windowRows.length) return [];
+    return windowRows.slice(startIndex, startIndex + pageSize);
+  }, [offset, pageSize, windowRows, windowStart]);
+  const grid = useMemo(() => ({ columns, rows: visibleRows }), [columns, visibleRows]);
 
   // Cleanup source on unmount
   useEffect(() => {
@@ -438,9 +428,13 @@ function App({
 
   // Load data when offset changes
   useEffect(() => {
-    // Skip initial load if we have preloaded data
-    if (offset === 0 && initialLoadDone.current) {
-      initialLoadDone.current = false; // Allow subsequent loads at offset 0
+    const windowEnd = windowStart + windowRows.length;
+    const withinWindow =
+      windowRows.length > 0 && offset >= windowStart && offset + pageSize <= windowEnd;
+    if (withinWindow) {
+      if (loading) {
+        setLoading(false);
+      }
       return;
     }
 
@@ -450,23 +444,27 @@ function App({
       setLoading(true);
       setError(null);
       try {
-        const limit = options.maxRows
-          ? Math.max(0, Math.min(pageSize, options.maxRows - offset))
-          : pageSize;
+        const windowSize = Math.max(50, pageSize * 3);
+        const start = Math.max(0, offset - pageSize);
+        const maxRows = options.maxRows ?? knownTotalRows;
+        const remaining =
+          maxRows === undefined || maxRows === null ? undefined : Math.max(0, maxRows - start);
+        const limit = remaining === undefined ? windowSize : Math.min(windowSize, remaining);
         const readOptions: ParquetReadOptions = {
           batchSize: options.batchSize ?? 1024,
           columns: columnsToRead.length > 0 ? columnsToRead : undefined,
           limit,
-          offset,
+          offset: start,
         };
         const rowsPage = await source.readTable(readOptions);
         const nextColumns = buildColumnInfo(metadata, rowsPage, columnsToRead);
 
         if (!canceled) {
-          setRows(rowsPage);
+          setWindowStart(start);
+          setWindowRows(rowsPage);
           setColumns(nextColumns);
           if (rowsPage.length < limit) {
-            setKnownTotalRows(offset + rowsPage.length);
+            setKnownTotalRows(start + rowsPage.length);
           }
         }
       } catch (caught) {
@@ -485,7 +483,19 @@ function App({
     return () => {
       canceled = true;
     };
-  }, [columnsToRead, metadata, offset, options.batchSize, options.maxRows, pageSize, source]);
+  }, [
+    columnsToRead,
+    knownTotalRows,
+    loading,
+    metadata,
+    offset,
+    options.batchSize,
+    options.maxRows,
+    pageSize,
+    source,
+    windowRows.length,
+    windowStart,
+  ]);
 
   // Load metadata (skip if preloaded)
   useEffect(() => {
@@ -507,8 +517,8 @@ function App({
 
   useEffect(() => {
     if (!metadata) return;
-    setColumns(buildColumnInfo(metadata, rows, columnsToRead));
-  }, [columnsToRead, metadata, rows]);
+    setColumns(buildColumnInfo(metadata, windowRows, columnsToRead));
+  }, [columnsToRead, metadata, windowRows]);
 
   // Cleanup notice timer
   useEffect(() => {
