@@ -40,8 +40,8 @@ importers:
         version: 19.2.3
     optionalDependencies:
       '@parquetlens/sql':
-        specifier: workspace:^
-        version: link:../../packages/sql
+        specifier: ^0.1.0
+        version: 0.1.0
     devDependencies:
       '@parquetlens/parquet-reader':
         specifier: workspace:*
@@ -409,6 +409,9 @@ packages:
       react: '>=19.0.0'
       react-devtools-core: ^7.0.1
       ws: ^8.18.0
+
+  '@parquetlens/sql@0.1.0':
+    resolution: {integrity: sha512-l1u7kMubooh/ornlI5WNpx+Q7kWaCpJv9CcQbjFa9XBnpQYctii6fpeCeV9XGp3iG2L3NBcjRcN9Gs4cG1YRhw==}
 
   '@rollup/rollup-android-arm-eabi@4.55.3':
     resolution: {integrity: sha512-qyX8+93kK/7R5BEXPC2PjUt0+fS/VO2BVHjEHyIEWiYn88rcRBHmdLgoJjktBltgAf+NY7RfCGB1SoyKS/p9kg==}
@@ -1661,6 +1664,12 @@ snapshots:
       - stage-js
       - typescript
       - web-tree-sitter
+
+  '@parquetlens/sql@0.1.0':
+    dependencies:
+      '@duckdb/duckdb-wasm': 1.32.0
+      apache-arrow: 17.0.0
+    optional: true
 
   '@rollup/rollup-android-arm-eabi@4.55.3':
     optional: true
