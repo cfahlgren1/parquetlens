@@ -1,6 +1,14 @@
 import { Buffer } from "node:buffer";
 
-import type { AsyncBuffer, FileMetaData, LogicalType, SchemaElement, SchemaTree } from "hyparquet";
+import type {
+  AsyncBuffer,
+  ColumnChunk,
+  FileMetaData,
+  LogicalType,
+  RowGroup,
+  SchemaElement,
+  SchemaTree,
+} from "hyparquet";
 import {
   asyncBufferFromFile,
   asyncBufferFromUrl,
@@ -10,7 +18,16 @@ import {
 } from "hyparquet";
 import { compressors } from "hyparquet-compressors";
 
-import type { ParquetColumn, ParquetMetadata, ParquetReadOptions, ParquetRow } from "./types.js";
+import type {
+  ParquetByteRange,
+  ParquetColumn,
+  ParquetColumnChunkLayout,
+  ParquetLayout,
+  ParquetMetadata,
+  ParquetReadOptions,
+  ParquetRow,
+  ParquetRowGroupLayout,
+} from "./types.js";
 
 type ParquetFile = AsyncBuffer | ArrayBuffer;
 
@@ -89,13 +106,9 @@ function normalizeReadOptions(options?: ParquetReadOptions): NormalizedReadOptio
 }
 
 function buildMetadata(metadata: FileMetaData): ParquetMetadata {
-  const createdBy = normalizeMetadataValue(
-    "created_by" in metadata ? metadata.created_by : metadata.createdBy,
-  );
-  const keyValueMetadata = normalizeKeyValueMetadata(
-    "key_value_metadata" in metadata ? metadata.key_value_metadata : metadata.keyValueMetadata,
-  );
-  const rowCount = normalizeRowCount("num_rows" in metadata ? metadata.num_rows : metadata.numRows);
+  const createdBy = normalizeMetadataValue(metadata.created_by);
+  const keyValueMetadata = normalizeKeyValueMetadata(metadata.key_value_metadata);
+  const rowCount = normalizeRowCount(metadata.num_rows);
   const schemaTree = parquetSchema(metadata);
 
   return {
@@ -103,7 +116,109 @@ function buildMetadata(metadata: FileMetaData): ParquetMetadata {
     keyValueMetadata,
     rowCount,
     columns: buildColumns(schemaTree),
+    layout: buildLayout(metadata),
   };
+}
+
+function buildLayout(metadata: FileMetaData): ParquetLayout | undefined {
+  const rowGroups = metadata.row_groups ?? [];
+  if (rowGroups.length === 0) {
+    return undefined;
+  }
+
+  return {
+    magic: createByteRange(0n, 4n),
+    rowGroups: rowGroups.map((rowGroup, index) => buildRowGroupLayout(rowGroup, index)),
+  };
+}
+
+function buildRowGroupLayout(rowGroup: RowGroup, index: number): ParquetRowGroupLayout {
+  const columns = rowGroup.columns
+    .map((columnChunk) => buildColumnChunkLayout(columnChunk))
+    .filter((columnChunk): columnChunk is ParquetColumnChunkLayout => columnChunk !== null);
+
+  return {
+    index,
+    bytes: resolveRowGroupBytes(rowGroup, columns),
+    numRows: normalizeBigInt(rowGroup.num_rows),
+    columns,
+  };
+}
+
+function buildColumnChunkLayout(columnChunk: ColumnChunk): ParquetColumnChunkLayout | null {
+  const meta = columnChunk.meta_data;
+  if (!meta) {
+    return null;
+  }
+
+  const path = meta.path_in_schema ?? [];
+  const name = path.length > 0 ? path.join(".") : "(unknown)";
+  const totalBytes = normalizeBigInt(meta.total_compressed_size) ?? 0n;
+  const dataStart = normalizeBigInt(meta.data_page_offset);
+
+  if (dataStart === undefined) {
+    return null;
+  }
+
+  const rawDictionaryStart = normalizeBigInt(meta.dictionary_page_offset);
+  const hasDictionary =
+    rawDictionaryStart !== undefined && rawDictionaryStart >= 0n && rawDictionaryStart < dataStart;
+  const chunkStart = hasDictionary ? rawDictionaryStart : dataStart;
+  const totalRange = createByteRange(chunkStart, totalBytes);
+
+  const dictionaryRange = hasDictionary
+    ? createByteRange(
+        rawDictionaryStart!,
+        clampRangeBytes(dataStart - rawDictionaryStart!, totalBytes),
+      )
+    : undefined;
+
+  const dataBytes = totalRange.end > dataStart ? totalRange.end - dataStart : 0n;
+  const dataRange = createByteRange(dataStart, dataBytes);
+
+  return {
+    name,
+    path,
+    bytes: totalBytes,
+    compression: meta.codec,
+    totalRange,
+    dictionaryRange,
+    dataRange,
+  };
+}
+
+function resolveRowGroupBytes(rowGroup: RowGroup, columns: ParquetColumnChunkLayout[]): bigint {
+  const totalCompressed = normalizeBigInt(rowGroup.total_compressed_size);
+  if (totalCompressed !== undefined) {
+    return totalCompressed;
+  }
+
+  const fromColumns = columns.reduce((sum, columnChunk) => sum + columnChunk.bytes, 0n);
+  if (fromColumns > 0n) {
+    return fromColumns;
+  }
+
+  return normalizeBigInt(rowGroup.total_byte_size) ?? 0n;
+}
+
+function createByteRange(start: bigint, bytes: bigint): ParquetByteRange {
+  const safeStart = start >= 0n ? start : 0n;
+  const safeBytes = bytes >= 0n ? bytes : 0n;
+  return {
+    start: safeStart,
+    bytes: safeBytes,
+    end: safeStart + safeBytes,
+  };
+}
+
+function clampRangeBytes(value: bigint, max: bigint): bigint {
+  if (value <= 0n) {
+    return 0n;
+  }
+  if (value > max) {
+    return max;
+  }
+  return value;
 }
 
 function buildColumns(schema: SchemaTree): ParquetColumn[] {
@@ -185,16 +300,28 @@ function normalizeMetadataValue(value: unknown): string | undefined {
   return String(value);
 }
 
-function normalizeRowCount(value: unknown): number | bigint | undefined {
+function normalizeBigInt(value: unknown): bigint | undefined {
   if (typeof value === "bigint") {
-    if (value <= BigInt(Number.MAX_SAFE_INTEGER)) {
-      return Number(value);
+    if (value < 0n) {
+      return 0n;
     }
     return value;
   }
 
   if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
+    return BigInt(Math.max(0, Math.trunc(value)));
+  }
+
+  return undefined;
+}
+
+function normalizeRowCount(value: unknown): number | bigint | undefined {
+  const normalized = normalizeBigInt(value);
+  if (normalized !== undefined) {
+    if (normalized <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      return Number(normalized);
+    }
+    return normalized;
   }
 
   return undefined;

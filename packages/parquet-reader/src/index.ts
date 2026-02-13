@@ -219,9 +219,13 @@ export async function readParquetPage(input: string, options: PageOptions): Prom
 export { resolveParquetUrl } from "./urls.js";
 export type { ResolvedParquetUrl } from "./urls.js";
 export type {
+  ParquetByteRange,
   ParquetColumn,
+  ParquetColumnChunkLayout,
   ParquetFileMetadata,
+  ParquetLayout,
   ParquetMetadata,
+  ParquetRowGroupLayout,
   ParquetReadOptions,
   ParquetRow,
 } from "./types.js";
