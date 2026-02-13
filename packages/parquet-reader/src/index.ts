@@ -11,7 +11,9 @@ import {
   asyncBufferFromHttpUrl,
   asyncBufferFromPath,
   asyncBufferFromStdin,
+  buildParquetMetadata,
   getMetadata,
+  getRawMetadata,
   readParquet,
 } from "./reader.js";
 import {
@@ -136,15 +138,24 @@ export async function readParquetTableFromStdin(
 }
 
 function createParquetSource(file: ParquetFile): ParquetSource {
+  let rawMetadataPromise: ReturnType<typeof getRawMetadata> | null = null;
   let metadataPromise: Promise<ParquetMetadata> | null = null;
+  const readRawMetadata = () => {
+    if (!rawMetadataPromise) {
+      rawMetadataPromise = getRawMetadata(file);
+    }
+    return rawMetadataPromise;
+  };
 
   return {
     readTable: async (options?: ParquetReadOptions) => {
-      return readParquet(file, options);
+      return readParquet(file, options, await readRawMetadata());
     },
     readMetadata: () => {
       if (!metadataPromise) {
-        metadataPromise = getMetadata(file);
+        metadataPromise = readRawMetadata().then((rawMetadata) => {
+          return buildParquetMetadata(rawMetadata);
+        });
       }
       return metadataPromise;
     },

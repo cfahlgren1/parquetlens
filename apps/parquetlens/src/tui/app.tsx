@@ -35,6 +35,8 @@ export function App({
 }: AppProps) {
   const { height } = useTerminalDimensions();
   const pageSize = Math.max(1, height - RESERVED_LINES);
+  const windowSize = Math.max(50, pageSize * 3);
+  const cacheLimit = 8;
 
   const [offset, setOffset] = useState(0);
   const [pendingOffset, setPendingOffset] = useState(0);
@@ -48,6 +50,8 @@ export function App({
   const [metadata, setMetadata] = useState<ParquetFileMetadata | null>(initialMetadata ?? null);
   const [knownTotalRows, setKnownTotalRows] = useState<number | null>(initialKnownTotal ?? null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const windowCacheRef = useRef(new Map<string, ParquetRow[]>());
+  const inflightWindowLoadsRef = useRef(new Map<string, Promise<ParquetRow[]>>());
   const hasLayout = (metadata?.layout?.rowGroups.length ?? 0) > 0;
 
   const effectiveTotal = options.maxRows ?? knownTotalRows;
@@ -57,6 +61,13 @@ export function App({
       : Math.max(0, effectiveTotal - pageSize);
 
   const columnsToRead = options.columns;
+  const columnsKey = columnsToRead.join("\u001f");
+  const batchSizeKey = options.batchSize ?? 1024;
+
+  useEffect(() => {
+    windowCacheRef.current.clear();
+    inflightWindowLoadsRef.current.clear();
+  }, [source, columnsKey, batchSizeKey]);
   const visibleRows = useMemo(() => {
     if (windowRows.length === 0) return [];
     const startIndex = offset - windowStart;
@@ -74,6 +85,70 @@ export function App({
 
   // Load data when offset changes
   useEffect(() => {
+    const getWindowStart = (targetOffset: number) => {
+      if (pageSize <= 0) return 0;
+      const snappedPage = Math.floor(targetOffset / pageSize);
+      return Math.max(0, snappedPage * pageSize - pageSize);
+    };
+    const getWindowLimit = (start: number) => {
+      const maxRows = options.maxRows ?? knownTotalRows;
+      const remaining =
+        maxRows === undefined || maxRows === null ? undefined : Math.max(0, maxRows - start);
+      return remaining === undefined ? windowSize : Math.min(windowSize, remaining);
+    };
+    const getWindowKey = (start: number, limit: number) => {
+      return `${start}:${limit}:${columnsKey}:${batchSizeKey}`;
+    };
+    const cacheWindow = (key: string, rows: ParquetRow[]) => {
+      const cache = windowCacheRef.current;
+      cache.delete(key);
+      cache.set(key, rows);
+      while (cache.size > cacheLimit) {
+        const oldest = cache.keys().next().value;
+        if (oldest === undefined) break;
+        cache.delete(oldest);
+      }
+    };
+    const loadWindowRows = (start: number, limit: number) => {
+      const key = getWindowKey(start, limit);
+      const cached = windowCacheRef.current.get(key);
+      if (cached) {
+        // Refresh LRU ordering.
+        windowCacheRef.current.delete(key);
+        windowCacheRef.current.set(key, cached);
+        return Promise.resolve(cached);
+      }
+
+      const inflight = inflightWindowLoadsRef.current.get(key);
+      if (inflight) {
+        return inflight;
+      }
+
+      const readOptions: ParquetReadOptions = {
+        batchSize: batchSizeKey,
+        columns: columnsToRead.length > 0 ? columnsToRead : undefined,
+        limit,
+        offset: start,
+      };
+      const readPromise = source
+        .readTable(readOptions)
+        .then((rowsPage) => {
+          cacheWindow(key, rowsPage);
+          return rowsPage;
+        })
+        .finally(() => {
+          inflightWindowLoadsRef.current.delete(key);
+        });
+
+      inflightWindowLoadsRef.current.set(key, readPromise);
+      return readPromise;
+    };
+    const prefetchWindow = (start: number) => {
+      const limit = getWindowLimit(start);
+      if (limit <= 0) return;
+      void loadWindowRows(start, limit).catch(() => {});
+    };
+
     const windowEnd = windowStart + windowRows.length;
     const withinWindow =
       windowRows.length > 0 &&
@@ -96,19 +171,9 @@ export function App({
       setLoading(true);
       setError(null);
       try {
-        const windowSize = Math.max(50, pageSize * 3);
-        const start = Math.max(0, targetOffset - pageSize);
-        const maxRows = options.maxRows ?? knownTotalRows;
-        const remaining =
-          maxRows === undefined || maxRows === null ? undefined : Math.max(0, maxRows - start);
-        const limit = remaining === undefined ? windowSize : Math.min(windowSize, remaining);
-        const readOptions: ParquetReadOptions = {
-          batchSize: options.batchSize ?? 1024,
-          columns: columnsToRead.length > 0 ? columnsToRead : undefined,
-          limit,
-          offset: start,
-        };
-        const rowsPage = await source.readTable(readOptions);
+        const start = getWindowStart(targetOffset);
+        const limit = getWindowLimit(start);
+        const rowsPage = await loadWindowRows(start, limit);
         const nextColumns = buildColumnInfo(metadata, rowsPage, columnsToRead);
 
         if (!canceled) {
@@ -119,6 +184,14 @@ export function App({
           if (rowsPage.length < limit && options.maxRows === undefined && knownTotalRows === null) {
             setKnownTotalRows(start + rowsPage.length);
           }
+        }
+
+        const downwardStart = start + pageSize;
+        const upwardStart = Math.max(0, start - pageSize);
+        if (targetOffset >= offset) {
+          prefetchWindow(downwardStart);
+        } else {
+          prefetchWindow(upwardStart);
         }
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : String(caught);
@@ -138,14 +211,18 @@ export function App({
     };
   }, [
     columnsToRead,
+    columnsKey,
+    batchSizeKey,
+    cacheLimit,
     knownTotalRows,
     loading,
     metadata,
     pendingOffset,
-    options.batchSize,
     options.maxRows,
+    offset,
     pageSize,
     source,
+    windowSize,
     windowRows.length,
     windowStart,
   ]);

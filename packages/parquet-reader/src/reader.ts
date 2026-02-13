@@ -63,17 +63,32 @@ export async function asyncBufferFromStdin(): Promise<ArrayBuffer> {
 export async function readParquet(
   file: ParquetFile,
   options?: ParquetReadOptions,
+  metadata?: FileMetaData,
 ): Promise<ParquetRow[]> {
   const { columns, rowStart, rowEnd } = normalizeReadOptions(options);
   if (rowStart !== undefined && rowEnd !== undefined && rowEnd <= rowStart) {
     return [];
   }
-  const rows = await parquetReadObjects({ file, columns, rowStart, rowEnd, compressors });
+  const rows = await parquetReadObjects({
+    file,
+    metadata,
+    columns,
+    rowStart,
+    rowEnd,
+    compressors,
+  });
   return rows as ParquetRow[];
 }
 
 export async function getMetadata(file: ParquetFile): Promise<ParquetMetadata> {
-  const metadata = await parquetMetadataAsync(file);
+  return buildParquetMetadata(await getRawMetadata(file));
+}
+
+export async function getRawMetadata(file: ParquetFile): Promise<FileMetaData> {
+  return parquetMetadataAsync(file);
+}
+
+export function buildParquetMetadata(metadata: FileMetaData): ParquetMetadata {
   return buildMetadata(metadata);
 }
 
