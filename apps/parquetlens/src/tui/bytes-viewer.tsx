@@ -266,7 +266,9 @@ export function BytesViewer({
     : "";
 
   const sortedTotals = useMemo(() => {
-    return [...columnTotals].sort((a, b) => (b.totalBytes > a.totalBytes ? 1 : b.totalBytes < a.totalBytes ? -1 : 0));
+    return [...columnTotals].sort((a, b) =>
+      b.totalBytes > a.totalBytes ? 1 : b.totalBytes < a.totalBytes ? -1 : 0,
+    );
   }, [columnTotals]);
 
   return (
@@ -305,13 +307,13 @@ export function BytesViewer({
           }}
         >
           {summary ? (
-            <box flexDirection="row" bg={THEME.header}>
+            <box flexDirection="row" backgroundColor={THEME.header}>
               <text wrapMode="none" truncate fg={THEME.text}>
                 {` ${summaryLine}`}
               </text>
             </box>
           ) : null}
-          <box flexDirection="row" bg={THEME.header} flexWrap="wrap">
+          <box flexDirection="row" backgroundColor={THEME.header} flexWrap="wrap">
             {columnTotals.map((col) => {
               const pct = summary ? formatPercent(col.totalBytes, summary.totalBytes) : "";
               const short = col.name.length <= 10 ? col.name : `${col.name.slice(0, 9)}…`;
@@ -349,7 +351,7 @@ export function BytesViewer({
                   <box
                     key={`bytes-row-${absoluteIndex}`}
                     flexDirection="row"
-                    bg={
+                    backgroundColor={
                       isRowSelected
                         ? THEME.header
                         : visibleIndex % 2 === 0
@@ -406,9 +408,10 @@ export function BytesViewer({
             <scrollbox scrollY flexGrow={1} backgroundColor={THEME.panel}>
               {sortedTotals.map((col) => {
                 const pct = summary ? formatPercent(col.totalBytes, summary.totalBytes) : "0.0%";
-                const barW = summary && summary.totalBytes > 0n
-                  ? scaleWidth(col.totalBytes, summary.totalBytes, Math.max(8, contentWidth - 40))
-                  : 0;
+                const barW =
+                  summary && summary.totalBytes > 0n
+                    ? scaleWidth(col.totalBytes, summary.totalBytes, Math.max(8, contentWidth - 40))
+                    : 0;
                 return (
                   <box key={`total-${col.columnIndex}`} flexDirection="row">
                     <text wrapMode="none" bg={col.color} fg={THEME.background}>
@@ -499,7 +502,7 @@ function renderBytesDetail(
   if (!chunk) {
     return (
       <box flexDirection="column">
-        <text wrapMode="none" fg={color} bold>
+        <text wrapMode="none" fg={color}>
           {columnName}
         </text>
         <text wrapMode="none" fg={THEME.muted}>
@@ -514,25 +517,34 @@ function renderBytesDetail(
 
   return (
     <box flexDirection="column">
-      <text wrapMode="none" fg={color} bold>
+      <text wrapMode="none" fg={color}>
         {chunk.name}
       </text>
       <text wrapMode="none" fg={THEME.muted}>
         {`row group ${row.rowGroup.index}`}
       </text>
-      <text wrapMode="none" fg={THEME.text}>{" "}</text>
+      <text wrapMode="none" fg={THEME.text}>
+        {" "}
+      </text>
       <LayoutInfoRow label="size" value={formatBytes(chunk.bytes)} />
-      <LayoutInfoRow label="% of row group" value={formatPercent(chunk.bytes, row.rowGroup.bytes)} />
+      <LayoutInfoRow
+        label="% of row group"
+        value={formatPercent(chunk.bytes, row.rowGroup.bytes)}
+      />
       {totalFileBytes > 0n ? (
         <LayoutInfoRow label="% of file" value={formatPercent(chunk.bytes, totalFileBytes)} />
       ) : null}
       {chunk.compression ? (
         <>
-          <text wrapMode="none" fg={THEME.text}>{" "}</text>
+          <text wrapMode="none" fg={THEME.text}>
+            {" "}
+          </text>
           <LayoutInfoRow label="codec" value={chunk.compression} />
         </>
       ) : null}
-      <text wrapMode="none" fg={THEME.text}>{" "}</text>
+      <text wrapMode="none" fg={THEME.text}>
+        {" "}
+      </text>
       {chunk.dictionaryRange ? (
         <>
           <LayoutInfoRow
@@ -557,7 +569,9 @@ function renderBytesDetail(
         labelColor={THEME.muted}
         valueColor={THEME.muted}
       />
-      <text wrapMode="none" fg={THEME.text}>{" "}</text>
+      <text wrapMode="none" fg={THEME.text}>
+        {" "}
+      </text>
       <LayoutInfoRow
         label="byte range"
         value={`${formatBigInt(chunk.totalRange.start)} → ${formatBigInt(chunk.totalRange.end)}`}
